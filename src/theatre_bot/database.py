@@ -7,6 +7,7 @@ import hashlib
 import sqlite3
 
 from theatre_bot.site_affiche import AfficheItem
+from theatre_bot.site_play import PlayDetails
 
 
 @dataclass(frozen=True)
@@ -157,4 +158,56 @@ def sync_affiche(connection: sqlite3.Connection, items: list[AfficheItem]) -> Sy
         performances_updated=performances_updated,
         performances_unchanged=performances_unchanged,
     )
+
+
+def play_sources(connection: sqlite3.Connection) -> list[tuple[int, str]]:
+    rows = connection.execute(
+        "SELECT id, source_url FROM plays WHERE is_active = 1 ORDER BY id"
+    ).fetchall()
+    return [(row["id"], row["source_url"]) for row in rows]
+
+
+def save_play_details(
+    connection: sqlite3.Connection,
+    play_id: int,
+    details: PlayDetails,
+) -> None:
+    synced_at = _now()
+    with connection:
+        connection.execute(
+            """
+            UPDATE plays
+            SET director = ?, summary = ?, synced_at = ?
+            WHERE id = ?
+            """,
+            (details.director, details.summary, synced_at, play_id),
+        )
+        connection.execute("DELETE FROM roles WHERE play_id = ?", (play_id,))
+        for member in details.cast:
+            connection.execute(
+                """
+                INSERT INTO artists (
+                    source_url, full_name, normalized_name, synced_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(source_url) DO UPDATE SET
+                    full_name = excluded.full_name,
+                    normalized_name = excluded.normalized_name,
+                    is_active = 1,
+                    synced_at = excluded.synced_at
+                """,
+                (
+                    member.artist_url,
+                    member.artist_name,
+                    _normalize(member.artist_name),
+                    synced_at,
+                ),
+            )
+            artist_id = connection.execute(
+                "SELECT id FROM artists WHERE source_url = ?",
+                (member.artist_url,),
+            ).fetchone()["id"]
+            connection.execute(
+                "INSERT OR IGNORE INTO roles (play_id, artist_id, role_name) VALUES (?, ?, ?)",
+                (play_id, artist_id, member.role_name),
+            )
 
