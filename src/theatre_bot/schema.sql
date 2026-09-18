@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS performances (
     starts_at TEXT NOT NULL,
     venue TEXT,
     ticket_url TEXT,
+    ticket_event_id TEXT,
     status TEXT NOT NULL DEFAULT 'scheduled',
     source_key TEXT NOT NULL UNIQUE,
     synced_at TEXT NOT NULL
@@ -70,4 +71,3 @@ CREATE TABLE IF NOT EXISTS unrecognized_requests (
     created_at TEXT NOT NULL,
     reviewed_at TEXT
 );
-
