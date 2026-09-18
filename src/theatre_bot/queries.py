@@ -168,6 +168,52 @@ def upcoming_for_artist(
     return result
 
 
+def plays_by_genre(
+    connection: sqlite3.Connection,
+    genre_fragment: str,
+    limit: int = 20,
+) -> list[tuple[str, str]]:
+    fragment = _normalize(genre_fragment)
+    rows = connection.execute(
+        """
+        SELECT title, genre FROM plays
+        WHERE is_active = 1 AND genre IS NOT NULL
+        ORDER BY title
+        """
+    ).fetchall()
+    result = [
+        (row["title"], row["genre"])
+        for row in rows
+        if fragment in _normalize(row["genre"])
+    ]
+    return result[:limit]
+
+
+def new_year_performances(
+    connection: sqlite3.Connection,
+    first_day: date,
+    last_day: date,
+) -> list[Performance]:
+    start = datetime.combine(first_day, time.min)
+    end = datetime.combine(last_day + timedelta(days=1), time.min)
+    rows = connection.execute(
+        """
+        SELECT p.title, p.genre, p.age_rating, p.source_url AS play_url,
+               e.starts_at, e.venue, e.ticket_event_id
+        FROM performances e
+        JOIN plays p ON p.id = e.play_id
+        WHERE e.status = 'scheduled' AND e.starts_at >= ? AND e.starts_at < ?
+          AND (
+            p.catalog_kind = 'children'
+            OR replace(lower(COALESCE(p.genre, '')), 'ё', 'е') LIKE '%сказк%'
+          )
+        ORDER BY e.starts_at, p.title
+        """,
+        (start.isoformat(timespec="minutes"), end.isoformat(timespec="minutes")),
+    ).fetchall()
+    return _rows_to_performances(rows)
+
+
 def _rows_to_performances(rows: list[sqlite3.Row]) -> list[Performance]:
     return [
         Performance(

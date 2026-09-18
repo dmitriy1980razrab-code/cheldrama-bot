@@ -21,6 +21,8 @@ class PlayDetails:
     director: str | None
     summary: str | None
     cast: tuple[CastMember, ...]
+    genre: str | None = None
+    age_rating: str | None = None
 
 
 def _classes(attrs: list[tuple[str, str | None]]) -> set[str]:
@@ -44,6 +46,8 @@ class _PlayParser(HTMLParser):
         self.person_href: str | None = None
         self.person_buffer: list[str] = []
         self.skip_summary_paragraph = False
+        self.detail_depth: int | None = None
+        self.points: list[str] = []
 
     @property
     def in_staff(self) -> bool:
@@ -62,6 +66,10 @@ class _PlayParser(HTMLParser):
                 self.staff_depth = self.div_depth
             elif "text" in classes and not self.in_staff and self.summary_depth is None:
                 self.summary_depth = self.div_depth
+            elif "detail" in classes:
+                self.detail_depth = self.div_depth
+            elif "point" in classes and self.detail_depth is not None:
+                self.capture, self.buffer = "detail_point", []
 
         if tag == "h1" and self.title is None:
             self.capture, self.buffer = "title", []
@@ -111,12 +119,18 @@ class _PlayParser(HTMLParser):
                 self.cast.append(CastMember(role or None, name, url))
             self.capture = None
             self.paragraph_people = []
+        elif tag == "div" and self.capture == "detail_point":
+            if text:
+                self.points.append(text)
+            self.capture = None
 
         if tag == "div":
             if self.staff_depth == self.div_depth:
                 self.staff_depth = None
             if self.summary_depth == self.div_depth:
                 self.summary_depth = None
+            if self.detail_depth == self.div_depth:
+                self.detail_depth = None
             self.div_depth -= 1
 
     def handle_data(self, data: str) -> None:
@@ -139,10 +153,23 @@ def parse_play(html_text: str) -> PlayDetails:
     if not parser.title:
         raise ValueError("На странице не найдено название спектакля")
     summary = " ".join(parser.summary_parts).strip() or None
+    age_rating = next((point for point in parser.points if point.rstrip().endswith("+")), None)
+    genre = next(
+        (
+            point
+            for point in parser.points
+            if point != age_rating
+            and not point.casefold().startswith("премьера")
+            and "час" not in point.casefold()
+            and "минут" not in point.casefold()
+        ),
+        None,
+    )
     return PlayDetails(
         title=parser.title,
         director=parser.director,
         summary=summary,
         cast=tuple(parser.cast),
+        genre=genre,
+        age_rating=age_rating,
     )
-

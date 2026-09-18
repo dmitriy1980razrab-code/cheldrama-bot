@@ -14,6 +14,7 @@ HTML = """
     <dt><a href="/theatre/people/person/director/">Денис Хуснияров</a></dt>
     <dd>Режиссер-постановщик</dd>
   </dl></div>
+  <div class="detail"><div class="point">Драма</div><div class="point">16+</div><div class="point">1 час</div></div>
 </div></div>
 <div class="info"><div class="more"><div class="text">
   <p style="text-align: right;">Цитата</p>
@@ -35,10 +36,11 @@ class PlayParserTests(unittest.TestCase):
         self.assertEqual(play.director, "Денис Хуснияров")
         self.assertEqual(play.summary, "Небольшая аннотация спектакля.")
         self.assertEqual(len(play.cast), 3)
+        self.assertEqual(play.genre, "Драма")
+        self.assertEqual(play.age_rating, "16+")
         self.assertEqual(play.cast[0].role_name, "Ильин")
         self.assertEqual(play.cast[1].artist_name, "Вторая Артистка")
 
 
 if __name__ == "__main__":
     unittest.main()
-

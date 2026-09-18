@@ -171,7 +171,7 @@ def play_sources(
     connection: sqlite3.Connection,
     missing_details_only: bool = False,
 ) -> list[tuple[int, str]]:
-    condition = "AND summary IS NULL" if missing_details_only else ""
+    condition = "AND (summary IS NULL OR genre IS NULL)" if missing_details_only else ""
     rows = connection.execute(
         f"SELECT id, source_url FROM plays WHERE is_active = 1 {condition} ORDER BY id"
     ).fetchall()
@@ -188,10 +188,18 @@ def save_play_details(
         connection.execute(
             """
             UPDATE plays
-            SET director = ?, summary = ?, synced_at = ?
+            SET director = ?, summary = ?, genre = COALESCE(?, genre),
+                age_rating = COALESCE(?, age_rating), synced_at = ?
             WHERE id = ?
             """,
-            (details.director, details.summary, synced_at, play_id),
+            (
+                details.director,
+                details.summary,
+                details.genre,
+                details.age_rating,
+                synced_at,
+                play_id,
+            ),
         )
         connection.execute("DELETE FROM roles WHERE play_id = ?", (play_id,))
         for member in details.cast:

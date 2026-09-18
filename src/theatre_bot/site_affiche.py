@@ -5,6 +5,7 @@ from datetime import date, datetime
 from html.parser import HTMLParser
 import json
 import re
+import time
 from urllib.parse import urljoin
 from urllib.request import Request, urlopen
 
@@ -189,3 +190,28 @@ def parse_affiche(html_text: str, today: date | None = None) -> list[AfficheItem
 
 def preview_json(items: list[AfficheItem]) -> str:
     return json.dumps([asdict(item) for item in items], ensure_ascii=False, indent=2)
+
+
+def discover_affiche_month_urls(html_text: str) -> list[str]:
+    paths = sorted(set(re.findall(r'href=["\'](/affiche/\d{4}/\d{2}/)["\']', html_text)))
+    return [urljoin(BASE_URL, path) for path in paths]
+
+
+def fetch_full_affiche(pause_seconds: float = 0.3, progress=None) -> list[AfficheItem]:
+    main_html = fetch_affiche_html()
+    urls = discover_affiche_month_urls(main_html)
+    all_items = parse_affiche(main_html)
+    current_path = f"/affiche/{date.today().year}/{date.today().month:02d}/"
+    urls = [url for url in urls if current_path not in url]
+    for number, url in enumerate(urls, start=1):
+        if progress:
+            progress(number, len(urls), url)
+        month_html = fetch_affiche_html(url)
+        all_items.extend(parse_affiche(month_html))
+        time.sleep(pause_seconds)
+
+    unique: dict[str, AfficheItem] = {}
+    for item in all_items:
+        key = item.ticket_event_id or f"{item.play_url}|{item.starts_at}|{item.venue or ''}"
+        unique[key] = item
+    return sorted(unique.values(), key=lambda item: (item.starts_at, item.title))

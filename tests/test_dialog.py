@@ -39,8 +39,13 @@ class DialogTests(unittest.TestCase):
                 event("Второй спектакль", "2026-09-20T17:00", "2"),
                 event("Третий спектакль", "2026-09-22T18:00", "3"),
                 event("Четвёртый спектакль", "2026-09-23T18:00", "4"),
+                event("Новогодняя сказка", "2026-12-25T12:00", "5"),
             ],
         )
+        self.connection.execute(
+            "UPDATE plays SET catalog_kind = 'children' WHERE title = 'Новогодняя сказка'"
+        )
+        self.connection.commit()
         first_play_id = self.connection.execute(
             "SELECT id FROM plays WHERE title = 'Первый спектакль'"
         ).fetchone()[0]
@@ -97,6 +102,24 @@ class DialogTests(unittest.TestCase):
         )
         self.assertEqual(len(reply.cards), 1)
         self.assertIn("Главная роль", reply.cards[0].details)
+
+    def test_weekday_on_next_week(self):
+        reply = answer(
+            self.connection,
+            "Что идёт во вторник на следующей неделе?",
+            datetime(2026, 9, 18, 12, 0),
+        )
+        self.assertEqual(len(reply.cards), 1)
+        self.assertEqual(reply.cards[0].title, "Третий спектакль")
+
+    def test_genre_returns_repertoire(self):
+        reply = answer(self.connection, "Покажите драмы", datetime(2026, 9, 18, 12, 0))
+        self.assertIn("Первый спектакль", reply.text)
+
+    def test_new_year_reply_has_no_cards(self):
+        reply = answer(self.connection, "Новогодняя кампания", datetime(2026, 9, 18, 12, 0))
+        self.assertIn("Новогодняя сказка", reply.text)
+        self.assertEqual(reply.cards, ())
 
 
 if __name__ == "__main__":

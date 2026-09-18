@@ -14,6 +14,8 @@ from theatre_bot.queries import (
     find_artists_in_text,
     find_play_in_text,
     nearest,
+    new_year_performances,
+    plays_by_genre,
     upcoming_for_play,
     upcoming_for_artist,
 )
@@ -64,6 +66,49 @@ def _weekend(today: date) -> tuple[date, date]:
     days_until_saturday = (5 - today.weekday()) % 7
     saturday = today + timedelta(days=days_until_saturday)
     return saturday, saturday + timedelta(days=1)
+
+
+WEEKDAYS = {
+    "понедельник": 0,
+    "вторник": 1,
+    "сред": 2,
+    "четверг": 3,
+    "пятниц": 4,
+    "суббот": 5,
+    "воскресен": 6,
+}
+
+GENRES = {
+    "комед": "комед",
+    "мелодрам": "мелодрам",
+    "драм": "драм",
+    "трагед": "трагед",
+    "сказк": "сказк",
+    "мюзикл": "мюзикл",
+    "музыкальн": "музыкальн",
+}
+
+
+def _weekday_date(text: str, today: date) -> date | None:
+    normalized = text.casefold().replace("ё", "е")
+    weekday = next((number for stem, number in WEEKDAYS.items() if stem in normalized), None)
+    if weekday is None:
+        return None
+    monday = today - timedelta(days=today.weekday())
+    if "следующ" in normalized:
+        monday += timedelta(days=7)
+    return monday + timedelta(days=weekday)
+
+
+def _genre_fragment(text: str) -> str | None:
+    normalized = text.casefold().replace("ё", "е")
+    return next((value for stem, value in GENRES.items() if stem in normalized), None)
+
+
+def _new_year_period(today: date) -> tuple[date, date]:
+    if today.month == 1 and today.day <= 10:
+        return date(today.year - 1, 12, 20), date(today.year, 1, 10)
+    return date(today.year, 12, 20), date(today.year + 1, 1, 10)
 
 
 def _card(performance: Performance) -> Card:
@@ -143,6 +188,25 @@ def answer(connection: sqlite3.Connection, text: str, now: datetime | None = Non
         lines = [f"• {title} — {role}" if role else f"• {title}" for title, role in repertoire]
         return Reply(text=f"{artist.full_name} участвует в спектаклях:\n" + "\n".join(lines))
 
+    if intent == Intent.GENRE:
+        fragment = _genre_fragment(text)
+        items = plays_by_genre(connection, fragment or "") if fragment else []
+        if not items:
+            return Reply(text="Спектаклей этого жанра в действующем репертуаре не найдено.")
+        lines = [f"• {title} — {genre}" for title, genre in items]
+        return Reply(text="В действующем репертуаре:\n" + "\n".join(lines))
+
+    if intent == Intent.NEW_YEAR:
+        first_day, last_day = _new_year_period(current.date())
+        items = new_year_performances(connection, first_day, last_day)
+        if not items:
+            return Reply(text="Новогодние спектакли на этот период пока не опубликованы.")
+        lines = [
+            f"• {item.starts_at.strftime('%d.%m.%Y в %H:%M')} — {item.title}"
+            for item in items
+        ]
+        return Reply(text="Новогодние сказки с 20 декабря по 10 января:\n" + "\n".join(lines))
+
     if intent == Intent.SCHEDULE_NEAREST:
         return _reply_for_performances(
             nearest(connection, current, limit=3),
@@ -166,6 +230,28 @@ def answer(connection: sqlite3.Connection, text: str, now: datetime | None = Non
             between_dates(connection, saturday, sunday),
             "В ближайшие выходные будем рады видеть вас на спектаклях:",
             "На ближайшие выходные спектаклей в афише нет.",
+        )
+
+    if intent == Intent.SCHEDULE_WEEKDAY:
+        requested = _weekday_date(text, current.date())
+        if requested is None:
+            return Reply(text="Уточните день недели, пожалуйста.")
+        return _reply_for_performances(
+            between_dates(connection, requested, requested),
+            f"Спектакли {requested.strftime('%d.%m.%Y')}:",
+            "На указанный день спектаклей в афише нет.",
+        )
+
+    if intent == Intent.SCHEDULE_WEEK:
+        normalized = text.casefold().replace("ё", "е")
+        monday = current.date() - timedelta(days=current.date().weekday())
+        if "следующ" in normalized:
+            monday += timedelta(days=7)
+        sunday = monday + timedelta(days=6)
+        return _reply_for_performances(
+            between_dates(connection, monday, sunday),
+            "Спектакли на выбранной неделе:",
+            "На выбранной неделе спектаклей в афише нет.",
         )
 
     return Reply(

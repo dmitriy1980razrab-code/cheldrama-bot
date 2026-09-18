@@ -5,7 +5,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
-from theatre_bot.site_affiche import parse_affiche
+from theatre_bot.site_affiche import discover_affiche_month_urls, parse_affiche
 
 
 HTML = """
@@ -40,6 +40,16 @@ class AfficheParserTests(unittest.TestCase):
         self.assertEqual(item.age_rating, "16+")
         self.assertEqual(item.venue, "Малая сцена")
         self.assertEqual(item.ticket_event_id, "1067")
+
+    def test_discovers_month_pages(self):
+        html = '<a href="/affiche/2026/09/">Сентябрь</a><a href="/affiche/2026/10/">Октябрь</a>'
+        self.assertEqual(
+            discover_affiche_month_urls(html),
+            [
+                "https://www.cheldrama.ru/affiche/2026/09/",
+                "https://www.cheldrama.ru/affiche/2026/10/",
+            ],
+        )
 
 
 if __name__ == "__main__":
