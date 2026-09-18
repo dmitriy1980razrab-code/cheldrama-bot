@@ -6,9 +6,10 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
-from theatre_bot.database import connect, initialize, sync_affiche
+from theatre_bot.database import connect, initialize, save_play_details, sync_affiche
 from theatre_bot.dialog import answer
 from theatre_bot.site_affiche import AfficheItem
+from theatre_bot.site_play import CastMember, PlayDetails
 
 
 def event(title: str, starts_at: str, event_id: str) -> AfficheItem:
@@ -40,6 +41,25 @@ class DialogTests(unittest.TestCase):
                 event("Четвёртый спектакль", "2026-09-23T18:00", "4"),
             ],
         )
+        first_play_id = self.connection.execute(
+            "SELECT id FROM plays WHERE title = 'Первый спектакль'"
+        ).fetchone()[0]
+        save_play_details(
+            self.connection,
+            first_play_id,
+            PlayDetails(
+                title="Первый спектакль",
+                director="Режиссёр",
+                summary="Аннотация",
+                cast=(
+                    CastMember(
+                        role_name="Главная роль",
+                        artist_name="Иван Петров",
+                        artist_url="https://www.cheldrama.ru/theatre/people/person/ivan-petrov/",
+                    ),
+                ),
+            ),
+        )
 
     def tearDown(self):
         self.connection.close()
@@ -63,6 +83,20 @@ class DialogTests(unittest.TestCase):
         reply = answer(self.connection, "Первый спектакль", datetime(2026, 9, 18, 12, 0))
         self.assertEqual(len(reply.cards), 1)
         self.assertEqual(reply.cards[0].title, "Первый спектакль")
+
+    def test_artist_surname_returns_repertoire(self):
+        reply = answer(self.connection, "Где играет Петров?", datetime(2026, 9, 18, 12, 0))
+        self.assertIn("Первый спектакль", reply.text)
+        self.assertIn("Главная роль", reply.text)
+
+    def test_artist_nearest_returns_cards_with_role(self):
+        reply = answer(
+            self.connection,
+            "Когда ближайший спектакль с участием Петрова?",
+            datetime(2026, 9, 18, 12, 0),
+        )
+        self.assertEqual(len(reply.cards), 1)
+        self.assertIn("Главная роль", reply.cards[0].details)
 
 
 if __name__ == "__main__":

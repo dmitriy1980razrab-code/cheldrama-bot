@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS plays (
     director TEXT,
     summary TEXT,
     image_url TEXT,
+    catalog_kind TEXT NOT NULL DEFAULT 'affiche',
     is_active INTEGER NOT NULL DEFAULT 1,
     source_updated_at TEXT,
     synced_at TEXT NOT NULL

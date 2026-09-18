@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 import sqlite3
+import re
 
 
 @dataclass(frozen=True)
@@ -24,8 +25,27 @@ class Play:
     summary: str | None
 
 
+@dataclass(frozen=True)
+class Artist:
+    id: int
+    full_name: str
+
+
 def _normalize(value: str) -> str:
     return " ".join(value.casefold().replace("ё", "е").split())
+
+
+def _surname_matches(surname: str, words: set[str]) -> bool:
+    for word in words:
+        if word == surname:
+            return True
+        if word.startswith(surname) and word[len(surname):] in {"а", "у", "ом", "ым", "е", "ой"}:
+            return True
+        if surname.endswith(("а", "я")):
+            stem = surname[:-1]
+            if word.startswith(stem) and word[len(stem):] in {"ой", "ей", "ую", "ю", "е"}:
+                return True
+    return False
 
 
 def find_play_in_text(connection: sqlite3.Connection, text: str) -> Play | None:
@@ -75,6 +95,77 @@ def cast_for_play(connection: sqlite3.Connection, play_id: int) -> list[tuple[st
         (play_id,),
     ).fetchall()
     return [(row["role_name"], row["full_name"]) for row in rows]
+
+
+def find_artists_in_text(connection: sqlite3.Connection, text: str) -> list[Artist]:
+    normalized_text = _normalize(text)
+    words = set(re.findall(r"[a-zа-я0-9-]+", normalized_text))
+    rows = connection.execute(
+        "SELECT id, full_name, normalized_name FROM artists WHERE is_active = 1 ORDER BY full_name"
+    ).fetchall()
+    exact: list[Artist] = []
+    surname_matches: list[Artist] = []
+    for row in rows:
+        artist = Artist(row["id"], row["full_name"])
+        normalized_name = row["normalized_name"]
+        if normalized_name in normalized_text:
+            exact.append(artist)
+            continue
+        surname = normalized_name.split()[-1]
+        if _surname_matches(surname, words):
+            surname_matches.append(artist)
+    return exact or surname_matches
+
+
+def artist_repertoire(
+    connection: sqlite3.Connection,
+    artist_id: int,
+) -> list[tuple[str, str | None]]:
+    rows = connection.execute(
+        """
+        SELECT DISTINCT p.title, r.role_name
+        FROM roles r JOIN plays p ON p.id = r.play_id
+        WHERE r.artist_id = ? AND p.is_active = 1
+        ORDER BY p.title, r.role_name
+        """,
+        (artist_id,),
+    ).fetchall()
+    return [(row["title"], row["role_name"]) for row in rows]
+
+
+def upcoming_for_artist(
+    connection: sqlite3.Connection,
+    artist_id: int,
+    from_time: datetime,
+    limit: int = 3,
+) -> list[tuple[Performance, str | None]]:
+    rows = connection.execute(
+        """
+        SELECT DISTINCT p.title, p.genre, p.age_rating, p.source_url AS play_url,
+               e.starts_at, e.venue, e.ticket_event_id, r.role_name
+        FROM roles r
+        JOIN plays p ON p.id = r.play_id
+        JOIN performances e ON e.play_id = p.id
+        WHERE r.artist_id = ? AND p.is_active = 1
+          AND e.status = 'scheduled' AND e.starts_at >= ?
+        ORDER BY e.starts_at, p.title
+        LIMIT ?
+        """,
+        (artist_id, from_time.isoformat(timespec="minutes"), limit),
+    ).fetchall()
+    result: list[tuple[Performance, str | None]] = []
+    for row in rows:
+        performance = Performance(
+            title=row["title"],
+            starts_at=datetime.fromisoformat(row["starts_at"]),
+            venue=row["venue"],
+            genre=row["genre"],
+            age_rating=row["age_rating"],
+            play_url=row["play_url"],
+            ticket_event_id=row["ticket_event_id"],
+        )
+        result.append((performance, row["role_name"]))
+    return result
 
 
 def _rows_to_performances(rows: list[sqlite3.Row]) -> list[Performance]:

@@ -30,6 +30,13 @@ def connect(database_path: str | Path) -> sqlite3.Connection:
 def initialize(connection: sqlite3.Connection) -> None:
     schema_path = Path(__file__).with_name("schema.sql")
     connection.executescript(schema_path.read_text(encoding="utf-8"))
+    columns = {
+        row["name"] for row in connection.execute("PRAGMA table_info(plays)").fetchall()
+    }
+    if "catalog_kind" not in columns:
+        connection.execute(
+            "ALTER TABLE plays ADD COLUMN catalog_kind TEXT NOT NULL DEFAULT 'affiche'"
+        )
     connection.commit()
 
 
@@ -160,9 +167,13 @@ def sync_affiche(connection: sqlite3.Connection, items: list[AfficheItem]) -> Sy
     )
 
 
-def play_sources(connection: sqlite3.Connection) -> list[tuple[int, str]]:
+def play_sources(
+    connection: sqlite3.Connection,
+    missing_details_only: bool = False,
+) -> list[tuple[int, str]]:
+    condition = "AND summary IS NULL" if missing_details_only else ""
     rows = connection.execute(
-        "SELECT id, source_url FROM plays WHERE is_active = 1 ORDER BY id"
+        f"SELECT id, source_url FROM plays WHERE is_active = 1 {condition} ORDER BY id"
     ).fetchall()
     return [(row["id"], row["source_url"]) for row in rows]
 
@@ -211,3 +222,64 @@ def save_play_details(
                 (play_id, artist_id, member.role_name),
             )
 
+
+def sync_repertoire(connection: sqlite3.Connection, items) -> tuple[int, int, int]:
+    added = 0
+    updated = 0
+    deactivated = 0
+    synced_at = _now()
+    seen_urls = {item.play_url for item in items}
+
+    with connection:
+        for item in items:
+            existing = connection.execute(
+                "SELECT id, title, catalog_kind, is_active FROM plays WHERE source_url = ?",
+                (item.play_url,),
+            ).fetchone()
+            if existing is None:
+                connection.execute(
+                    """
+                    INSERT INTO plays (
+                        source_url, title, normalized_title, catalog_kind, is_active, synced_at
+                    ) VALUES (?, ?, ?, ?, 1, ?)
+                    """,
+                    (
+                        item.play_url,
+                        item.title,
+                        _normalize(item.title),
+                        item.catalog_kind,
+                        synced_at,
+                    ),
+                )
+                added += 1
+            else:
+                changed = (
+                    existing["title"] != item.title
+                    or existing["catalog_kind"] != item.catalog_kind
+                    or existing["is_active"] != 1
+                )
+                connection.execute(
+                    """
+                    UPDATE plays SET title = ?, normalized_title = ?, catalog_kind = ?,
+                                     is_active = 1, synced_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        item.title,
+                        _normalize(item.title),
+                        item.catalog_kind,
+                        synced_at,
+                        existing["id"],
+                    ),
+                )
+                updated += int(changed)
+
+        active_catalog = connection.execute(
+            "SELECT id, source_url FROM plays WHERE catalog_kind IN ('repertoire', 'children') AND is_active = 1"
+        ).fetchall()
+        for row in active_catalog:
+            if row["source_url"] not in seen_urls:
+                connection.execute("UPDATE plays SET is_active = 0 WHERE id = ?", (row["id"],))
+                deactivated += 1
+
+    return added, updated, deactivated

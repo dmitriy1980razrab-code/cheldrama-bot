@@ -10,9 +10,12 @@ from theatre_bot.queries import (
     Performance,
     between_dates,
     cast_for_play,
+    artist_repertoire,
+    find_artists_in_text,
     find_play_in_text,
     nearest,
     upcoming_for_play,
+    upcoming_for_artist,
 )
 
 
@@ -87,6 +90,7 @@ def answer(connection: sqlite3.Connection, text: str, now: datetime | None = Non
     current = now or theatre_now()
     intent = detect_intent(text).intent
     play = find_play_in_text(connection, text)
+    artists = find_artists_in_text(connection, text)
 
     if play is not None and intent == Intent.PLAY_CAST:
         cast = cast_for_play(connection, play.id)
@@ -109,6 +113,35 @@ def answer(connection: sqlite3.Connection, text: str, now: datetime | None = Non
             f"Ближайшие показы спектакля «{play.title}»:",
             f"Ближайших показов спектакля «{play.title}» в афише нет.",
         )
+
+    if len(artists) > 1:
+        names = "\n".join(f"• {artist.full_name}" for artist in artists)
+        return Reply(text="Нашлось несколько артистов. Уточните имя:\n" + names)
+
+    if len(artists) == 1:
+        artist = artists[0]
+        normalized = text.casefold().replace("ё", "е")
+        wants_nearest = "когда" in normalized or "ближайш" in normalized
+        if wants_nearest:
+            items = upcoming_for_artist(connection, artist.id, current, limit=3)
+            if not items:
+                return Reply(text=f"Ближайших спектаклей с участием {artist.full_name} в афише нет.")
+            cards = []
+            for performance, role in items:
+                card = _card(performance)
+                role_text = f"Роль: {role}" if role else ""
+                details = " · ".join(value for value in (role_text, card.details) if value)
+                cards.append(Card(card.title, card.subtitle, details, card.play_url, card.ticket_event_id))
+            return Reply(
+                text=f"Артист: {artist.full_name}. Ближайшие спектакли:",
+                cards=tuple(cards),
+            )
+
+        repertoire = artist_repertoire(connection, artist.id)
+        if not repertoire:
+            return Reply(text=f"Действующих спектаклей с участием {artist.full_name} не найдено.")
+        lines = [f"• {title} — {role}" if role else f"• {title}" for title, role in repertoire]
+        return Reply(text=f"{artist.full_name} участвует в спектаклях:\n" + "\n".join(lines))
 
     if intent == Intent.SCHEDULE_NEAREST:
         return _reply_for_performances(

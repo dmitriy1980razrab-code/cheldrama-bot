@@ -15,7 +15,7 @@ DATABASE_PATH = PROJECT_ROOT / "data" / "theatre.sqlite3"
 if __name__ == "__main__":
     connection = connect(DATABASE_PATH)
     initialize(connection)
-    sources = play_sources(connection)
+    sources = play_sources(connection, missing_details_only=True)
     try:
         for number, (play_id, url) in enumerate(sources, start=1):
             details = parse_play(fetch_play_html(url))
@@ -27,4 +27,3 @@ if __name__ == "__main__":
         connection.close()
 
     print("Подробные сведения о спектаклях обновлены.")
-
