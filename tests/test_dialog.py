@@ -121,6 +121,36 @@ class DialogTests(unittest.TestCase):
         self.assertIn("Новогодняя сказка", reply.text)
         self.assertEqual(reply.cards, ())
 
+    def test_typo_in_play_title(self):
+        reply = answer(self.connection, "Первый спектакал", datetime(2026, 9, 18, 12, 0))
+        self.assertEqual(len(reply.cards), 1)
+        self.assertEqual(reply.cards[0].title, "Первый спектакль")
+
+    def test_typo_in_artist_surname(self):
+        reply = answer(self.connection, "Где играет Питров?", datetime(2026, 9, 18, 12, 0))
+        self.assertIn("Иван Петров", reply.text)
+
+    def test_unknown_request_is_logged(self):
+        answer(self.connection, "Совершенно неизвестный вопрос", datetime(2026, 9, 18, 12, 0))
+        count = self.connection.execute("SELECT count(*) FROM unrecognized_requests").fetchone()[0]
+        self.assertEqual(count, 1)
+
+    def test_greeting(self):
+        reply = answer(self.connection, "Добрый вечер", datetime(2026, 9, 18, 12, 0))
+        self.assertIn("театр драмы", reply.text.casefold())
+
+    def test_help(self):
+        reply = answer(self.connection, "Что ты умеешь?", datetime(2026, 9, 18, 12, 0))
+        self.assertIn("жанре", reply.text)
+
+    def test_template_can_be_edited_in_database(self):
+        self.connection.execute(
+            "UPDATE response_templates SET template = 'Новый текст' WHERE intent = 'greeting'"
+        )
+        self.connection.commit()
+        reply = answer(self.connection, "Привет", datetime(2026, 9, 18, 12, 0))
+        self.assertEqual(reply.text, "Новый текст")
+
 
 if __name__ == "__main__":
     unittest.main()

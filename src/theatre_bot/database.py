@@ -8,6 +8,7 @@ import sqlite3
 
 from theatre_bot.site_affiche import AfficheItem
 from theatre_bot.site_play import PlayDetails
+from theatre_bot.templates import seed_templates
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,7 @@ def initialize(connection: sqlite3.Connection) -> None:
         connection.execute(
             "ALTER TABLE plays ADD COLUMN catalog_kind TEXT NOT NULL DEFAULT 'affiche'"
         )
+    seed_templates(connection)
     connection.commit()
 
 
@@ -291,3 +293,18 @@ def sync_repertoire(connection: sqlite3.Connection, items) -> tuple[int, int, in
                 deactivated += 1
 
     return added, updated, deactivated
+
+
+def log_unrecognized_request(
+    connection: sqlite3.Connection,
+    text: str,
+    channel: str = "local",
+) -> None:
+    with connection:
+        connection.execute(
+            """
+            INSERT INTO unrecognized_requests (channel, text, created_at)
+            VALUES (?, ?, ?)
+            """,
+            (channel, text, _now()),
+        )

@@ -21,7 +21,7 @@ class IntentTests(unittest.TestCase):
         self.assertEqual(detect_intent("Хочу купить билет").intent, Intent.TICKET)
 
     def test_unknown(self):
-        self.assertEqual(detect_intent("Добрый вечер").intent, Intent.UNKNOWN)
+        self.assertEqual(detect_intent("Совершенно неизвестный запрос").intent, Intent.UNKNOWN)
 
     def test_genre(self):
         self.assertEqual(detect_intent("Покажите комедии").intent, Intent.GENRE)
@@ -31,6 +31,9 @@ class IntentTests(unittest.TestCase):
 
     def test_new_year_campaign(self):
         self.assertEqual(detect_intent("Новогодняя кампания").intent, Intent.NEW_YEAR)
+
+    def test_typo_in_schedule(self):
+        self.assertEqual(detect_intent("Покажи афишу и росписание").intent, Intent.SCHEDULE_NEAREST)
 
 
 if __name__ == "__main__":

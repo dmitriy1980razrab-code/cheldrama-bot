@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 import sqlite3
 import re
+from difflib import SequenceMatcher
 
 
 @dataclass(frozen=True)
@@ -32,7 +33,20 @@ class Artist:
 
 
 def _normalize(value: str) -> str:
-    return " ".join(value.casefold().replace("ё", "е").split())
+    value = value.casefold().replace("ё", "е")
+    return " ".join(re.findall(r"[a-zа-я0-9]+", value))
+
+
+def _best_phrase_similarity(text: str, candidate: str) -> float:
+    text_words = text.split()
+    candidate_words = candidate.split()
+    size = len(candidate_words)
+    phrases = [
+        " ".join(text_words[start:start + width])
+        for width in {max(1, size - 1), size, size + 1}
+        for start in range(max(0, len(text_words) - width + 1))
+    ]
+    return max((SequenceMatcher(None, phrase, candidate).ratio() for phrase in phrases), default=0.0)
 
 
 def _surname_matches(surname: str, words: set[str]) -> bool:
@@ -60,6 +74,13 @@ def find_play_in_text(connection: sqlite3.Connection, text: str) -> Play | None:
     for row in rows:
         if row["normalized_title"] in normalized_text:
             return Play(row["id"], row["title"], row["director"], row["summary"])
+    fuzzy_matches = [
+        (_best_phrase_similarity(normalized_text, row["normalized_title"]), row)
+        for row in rows
+    ]
+    score, row = max(fuzzy_matches, default=(0.0, None), key=lambda item: item[0])
+    if row is not None and score >= 0.82:
+        return Play(row["id"], row["title"], row["director"], row["summary"])
     return None
 
 
@@ -100,6 +121,11 @@ def cast_for_play(connection: sqlite3.Connection, play_id: int) -> list[tuple[st
 def find_artists_in_text(connection: sqlite3.Connection, text: str) -> list[Artist]:
     normalized_text = _normalize(text)
     words = set(re.findall(r"[a-zа-я0-9-]+", normalized_text))
+    fuzzy_words = words - {
+        "где", "играет", "участвует", "когда", "ближайший", "ближайшие",
+        "спектакль", "спектакли", "артист", "актриса", "актер", "актёр",
+        "роль", "роли", "покажи", "подскажи", "какие", "какой", "есть",
+    }
     rows = connection.execute(
         "SELECT id, full_name, normalized_name FROM artists WHERE is_active = 1 ORDER BY full_name"
     ).fetchall()
@@ -113,6 +139,12 @@ def find_artists_in_text(connection: sqlite3.Connection, text: str) -> list[Arti
             continue
         surname = normalized_name.split()[-1]
         if _surname_matches(surname, words):
+            surname_matches.append(artist)
+            continue
+        if any(
+            len(word) >= 4 and SequenceMatcher(None, word, surname).ratio() >= 0.80
+            for word in fuzzy_words
+        ):
             surname_matches.append(artist)
     return exact or surname_matches
 

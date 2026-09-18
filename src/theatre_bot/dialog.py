@@ -6,6 +6,8 @@ import re
 import sqlite3
 
 from theatre_bot.intents import Intent, detect_intent
+from theatre_bot.database import log_unrecognized_request
+from theatre_bot.templates import render_template
 from theatre_bot.queries import (
     Performance,
     between_dates,
@@ -137,6 +139,12 @@ def answer(connection: sqlite3.Connection, text: str, now: datetime | None = Non
     play = find_play_in_text(connection, text)
     artists = find_artists_in_text(connection, text)
 
+    if intent == Intent.GREETING:
+        return Reply(text=render_template(connection, "greeting"))
+
+    if intent == Intent.HELP:
+        return Reply(text=render_template(connection, "help"))
+
     if play is not None and intent == Intent.PLAY_CAST:
         cast = cast_for_play(connection, play.id)
         if not cast:
@@ -155,7 +163,7 @@ def answer(connection: sqlite3.Connection, text: str, now: datetime | None = Non
     if play is not None:
         return _reply_for_performances(
             upcoming_for_play(connection, play.id, current, limit=3),
-            f"Ближайшие показы спектакля «{play.title}»:",
+            render_template(connection, "play", "upcoming", title=play.title),
             f"Ближайших показов спектакля «{play.title}» в афише нет.",
         )
 
@@ -178,7 +186,7 @@ def answer(connection: sqlite3.Connection, text: str, now: datetime | None = Non
                 details = " · ".join(value for value in (role_text, card.details) if value)
                 cards.append(Card(card.title, card.subtitle, details, card.play_url, card.ticket_event_id))
             return Reply(
-                text=f"Артист: {artist.full_name}. Ближайшие спектакли:",
+                text=render_template(connection, "artist", "upcoming", artist=artist.full_name),
                 cards=tuple(cards),
             )
 
@@ -194,7 +202,7 @@ def answer(connection: sqlite3.Connection, text: str, now: datetime | None = Non
         if not items:
             return Reply(text="Спектаклей этого жанра в действующем репертуаре не найдено.")
         lines = [f"• {title} — {genre}" for title, genre in items]
-        return Reply(text="В действующем репертуаре:\n" + "\n".join(lines))
+        return Reply(text=render_template(connection, "genre", "list") + "\n" + "\n".join(lines))
 
     if intent == Intent.NEW_YEAR:
         first_day, last_day = _new_year_period(current.date())
@@ -205,12 +213,12 @@ def answer(connection: sqlite3.Connection, text: str, now: datetime | None = Non
             f"• {item.starts_at.strftime('%d.%m.%Y в %H:%M')} — {item.title}"
             for item in items
         ]
-        return Reply(text="Новогодние сказки с 20 декабря по 10 января:\n" + "\n".join(lines))
+        return Reply(text=render_template(connection, "new_year", "list") + "\n" + "\n".join(lines))
 
     if intent == Intent.SCHEDULE_NEAREST:
         return _reply_for_performances(
             nearest(connection, current, limit=3),
-            "Ближайшие встречи на нашей сцене:",
+            render_template(connection, "schedule", "nearest"),
             "В ближайшее время спектаклей в афише не найдено.",
         )
 
@@ -220,7 +228,7 @@ def answer(connection: sqlite3.Connection, text: str, now: datetime | None = Non
             return Reply(text="Уточните дату, пожалуйста, например: 25.09 или завтра.")
         return _reply_for_performances(
             between_dates(connection, requested, requested),
-            f"Спектакли {requested.strftime('%d.%m.%Y')}:",
+            render_template(connection, "schedule", "date", date=requested.strftime('%d.%m.%Y')),
             "На выбранную дату спектаклей в афише нет.",
         )
 
@@ -228,7 +236,7 @@ def answer(connection: sqlite3.Connection, text: str, now: datetime | None = Non
         saturday, sunday = _weekend(current.date())
         return _reply_for_performances(
             between_dates(connection, saturday, sunday),
-            "В ближайшие выходные будем рады видеть вас на спектаклях:",
+            render_template(connection, "schedule", "weekend"),
             "На ближайшие выходные спектаклей в афише нет.",
         )
 
@@ -238,7 +246,7 @@ def answer(connection: sqlite3.Connection, text: str, now: datetime | None = Non
             return Reply(text="Уточните день недели, пожалуйста.")
         return _reply_for_performances(
             between_dates(connection, requested, requested),
-            f"Спектакли {requested.strftime('%d.%m.%Y')}:",
+            render_template(connection, "schedule", "date", date=requested.strftime('%d.%m.%Y')),
             "На указанный день спектаклей в афише нет.",
         )
 
@@ -250,13 +258,9 @@ def answer(connection: sqlite3.Connection, text: str, now: datetime | None = Non
         sunday = monday + timedelta(days=6)
         return _reply_for_performances(
             between_dates(connection, monday, sunday),
-            "Спектакли на выбранной неделе:",
+            render_template(connection, "schedule", "week"),
             "На выбранной неделе спектаклей в афише нет.",
         )
 
-    return Reply(
-        text=(
-            "Я помогу узнать ближайшие спектакли и расписание. "
-            "Например, спросите: «Что идёт завтра?» или «Что посмотреть на выходных?»"
-        )
-    )
+    log_unrecognized_request(connection, text)
+    return Reply(text=render_template(connection, "fallback"))
