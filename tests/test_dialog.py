@@ -137,7 +137,10 @@ class DialogTests(unittest.TestCase):
 
     def test_greeting(self):
         reply = answer(self.connection, "Добрый вечер", datetime(2026, 9, 18, 12, 0))
-        self.assertIn("театр драмы", reply.text.casefold())
+        self.assertEqual(
+            reply.text,
+            "Здравствуйте! Разрешите пригласить Вас в мир театра имени Н. Орлова 🎭",
+        )
 
     def test_help(self):
         reply = answer(self.connection, "Что ты умеешь?", datetime(2026, 9, 18, 12, 0))

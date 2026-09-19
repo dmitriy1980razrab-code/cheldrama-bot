@@ -5,8 +5,7 @@ import sqlite3
 
 DEFAULT_TEMPLATES: dict[tuple[str, str], str] = {
     ("greeting", "default"): (
-        "Добро пожаловать в Челябинский театр драмы имени Наума Орлова. "
-        "Я помогу выбрать спектакль, узнать расписание и состав исполнителей."
+        "Здравствуйте! Разрешите пригласить Вас в мир театра имени Н. Орлова 🎭"
     ),
     ("help", "default"): (
         "Вы можете спросить о ближайших спектаклях, конкретной дате, жанре, "
@@ -27,6 +26,20 @@ DEFAULT_TEMPLATES: dict[tuple[str, str], str] = {
     ("new_year", "list"): "Новогодние сказки с 20 декабря по 10 января:",
 }
 
+LEGACY_TEMPLATES: dict[tuple[str, str], tuple[str, ...]] = {
+    ("greeting", "default"): (
+        (
+            "Здравствуйте! Разрешите пригласить Вас в мир театра 🎭\n\n"
+            "Я помогу Вам выбрать спектакль, узнать расписание и познакомиться "
+            "с артистами Челябинского театра драмы имени Наума Орлова."
+        ),
+        (
+            "Добро пожаловать в Челябинский театр драмы имени Наума Орлова. "
+            "Я помогу выбрать спектакль, узнать расписание и состав исполнителей."
+        ),
+    ),
+}
+
 
 def seed_templates(connection: sqlite3.Connection) -> None:
     for (intent, variant), template in DEFAULT_TEMPLATES.items():
@@ -37,6 +50,15 @@ def seed_templates(connection: sqlite3.Connection) -> None:
             """,
             (intent, variant, template),
         )
+        legacy_values = LEGACY_TEMPLATES.get((intent, variant), ())
+        for legacy in legacy_values:
+            connection.execute(
+                """
+                UPDATE response_templates SET template = ?
+                WHERE intent = ? AND channel = 'all' AND variant = ? AND template = ?
+                """,
+                (template, intent, variant, legacy),
+            )
 
 
 def render_template(
@@ -60,4 +82,3 @@ def render_template(
         return template.format(**values)
     except KeyError:
         return template
-

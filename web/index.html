@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Чат бот театра</title>
+  <link rel="stylesheet" href="/widget.css">
+</head>
+<body>
+  <main class="demo">
+    <h1>Чат бот театра</h1>
+    <p>Локальная демонстрационная страница</p>
+  </main>
+
+  <button class="launcher" id="launcher" type="button" aria-expanded="true" aria-controls="chat-panel">
+    <span aria-hidden="true">🎭</span>
+    <span>Ваш капельдинер</span>
+  </button>
+
+  <section class="chat" id="chat-panel" aria-label="Чат бот театра">
+    <header class="chat__header">
+      <div>
+        <strong>Ваш капельдинер</strong>
+        <span>Помогу выбрать спектакль</span>
+      </div>
+      <button id="close-chat" type="button" aria-label="Закрыть чат">×</button>
+    </header>
+
+    <div class="chat__messages" id="messages" aria-live="polite"></div>
+
+    <div class="quick" id="quick-actions">
+      <button type="button" data-message="Что идёт?">Ближайшие</button>
+      <button type="button" data-message="Что идёт на выходных?">Выходные</button>
+      <button type="button" data-message="Что ты умеешь?">Возможности</button>
+    </div>
+
+    <form class="composer" id="chat-form">
+      <label class="sr-only" for="message">Ваш вопрос</label>
+      <input id="message" name="message" maxlength="1000" autocomplete="off" placeholder="Спросите о спектакле…" required>
+      <button type="submit" aria-label="Отправить">➜</button>
+    </form>
+  </section>
+
+  <script src="/widget.js" defer></script>
+</body>
+</html>

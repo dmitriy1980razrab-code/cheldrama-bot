@@ -55,6 +55,14 @@ python scripts/show_unrecognized.py
 python scripts/show_templates.py
 ```
 
+## Локальный виджет сайта
+
+```bash
+python scripts/run_web.py
+```
+
+Затем открыть `http://127.0.0.1:8080`. Сервер доступен только на этом компьютере.
+
 
 ## Ограничения первой версии
 
