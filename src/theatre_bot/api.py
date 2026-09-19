@@ -6,9 +6,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
 from urllib.parse import urlparse
+import secrets
 
 from theatre_bot.database import connect, initialize
 from theatre_bot.dialog import Reply, answer
+from theatre_bot.security import ConversationStore, RateLimiter, valid_session_id
 
 
 MAX_BODY_BYTES = 16_384
@@ -21,7 +23,15 @@ def serialize_reply(reply: Reply) -> dict:
     }
 
 
-def create_handler(database_path: Path, web_root: Path):
+def create_handler(
+    database_path: Path,
+    web_root: Path,
+    conversations: ConversationStore | None = None,
+    rate_limiter: RateLimiter | None = None,
+):
+    conversation_store = conversations or ConversationStore()
+    limiter = rate_limiter or RateLimiter()
+
     class TheatreBotHandler(BaseHTTPRequestHandler):
         server_version = "TheatreBot/0.1"
 
@@ -31,6 +41,13 @@ def create_handler(database_path: Path, web_root: Path):
             self.send_header("Content-Length", str(len(body)))
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("X-Frame-Options", "SAMEORIGIN")
+            self.send_header("Referrer-Policy", "same-origin")
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'self'; script-src 'self'; style-src 'self'; "
+                "img-src 'self' https://www.cheldrama.ru data:; connect-src 'self'; "
+                "frame-ancestors 'self'",
+            )
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
@@ -86,14 +103,29 @@ def create_handler(database_path: Path, web_root: Path):
             if len(message) > 1000:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"error": "message_too_long"})
                 return
+            supplied_session_id = payload.get("session_id")
+            if supplied_session_id is not None and not valid_session_id(supplied_session_id):
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid_session_id"})
+                return
+            session_id = supplied_session_id or secrets.token_urlsafe(24)
+            client_ip = self.client_address[0]
+            if not limiter.allow(f"{client_ip}:{session_id}"):
+                self._send_json(HTTPStatus.TOO_MANY_REQUESTS, {"error": "rate_limit"})
+                return
 
             connection = connect(database_path)
             try:
                 initialize(connection)
-                reply = answer(connection, message.strip())
+                history = tuple(
+                    turn.user_text for turn in conversation_store.get(session_id)
+                )
+                reply = answer(connection, message.strip(), history=history)
             finally:
                 connection.close()
-            self._send_json(HTTPStatus.OK, serialize_reply(reply))
+            conversation_store.add(session_id, message.strip(), reply.text)
+            response = serialize_reply(reply)
+            response["session_id"] = session_id
+            self._send_json(HTTPStatus.OK, response)
 
         def log_message(self, format: str, *args) -> None:
             print(f"{self.address_string()} - {format % args}")
@@ -117,4 +149,3 @@ def run_server(
         pass
     finally:
         server.server_close()
-

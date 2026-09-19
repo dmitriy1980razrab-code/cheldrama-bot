@@ -154,6 +154,35 @@ class DialogTests(unittest.TestCase):
         reply = answer(self.connection, "Привет", datetime(2026, 9, 18, 12, 0))
         self.assertEqual(reply.text, "Новый текст")
 
+    def test_follow_up_cast_uses_previous_play(self):
+        reply = answer(
+            self.connection,
+            "А кто там играет?",
+            datetime(2026, 9, 18, 12, 0),
+            history=("Расскажите про Первый спектакль",),
+        )
+        self.assertIn("Иван Петров", reply.text)
+
+    def test_follow_up_nearest_uses_previous_artist(self):
+        reply = answer(
+            self.connection,
+            "А когда ближайший?",
+            datetime(2026, 9, 18, 12, 0),
+            history=("Где играет Петров?",),
+        )
+        self.assertEqual(len(reply.cards), 1)
+        self.assertEqual(reply.cards[0].title, "Первый спектакль")
+
+    def test_follow_up_uses_most_recent_entity(self):
+        reply = answer(
+            self.connection,
+            "А когда ближайший?",
+            now=datetime(2026, 9, 18, 12, 0),
+            history=("Когда идёт Первый спектакль?", "Где играет Иван Петров?"),
+        )
+        self.assertIn("Иван Петров", reply.text)
+        self.assertEqual(len(reply.cards), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

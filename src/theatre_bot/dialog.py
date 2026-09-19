@@ -113,6 +113,26 @@ def _new_year_period(today: date) -> tuple[date, date]:
     return date(today.year, 12, 20), date(today.year + 1, 1, 10)
 
 
+def _looks_like_follow_up(text: str) -> bool:
+    normalized = text.casefold().replace("ё", "е")
+    words = re.findall(r"[a-zа-я0-9]+", normalized)
+    markers = ("там", "этот", "этом", "нем", "кто", "когда", "ближай", "еще", "роль")
+    return len(words) <= 6 and (
+        normalized.startswith("а ") or any(marker in normalized for marker in markers)
+    )
+
+
+def _last_context(connection: sqlite3.Connection, history: tuple[str, ...]):
+    for previous_text in reversed(history):
+        artists = find_artists_in_text(connection, previous_text)
+        if artists:
+            return None, artists
+        play = find_play_in_text(connection, previous_text)
+        if play is not None:
+            return play, []
+    return None, []
+
+
 def _card(performance: Performance) -> Card:
     subtitle = performance.starts_at.strftime("%d.%m.%Y в %H:%M")
     details = " · ".join(
@@ -133,11 +153,25 @@ def _reply_for_performances(items: list[Performance], heading: str, empty: str) 
     return Reply(text=heading, cards=tuple(_card(item) for item in items))
 
 
-def answer(connection: sqlite3.Connection, text: str, now: datetime | None = None) -> Reply:
+def answer(
+    connection: sqlite3.Connection,
+    text: str,
+    now: datetime | None = None,
+    history: tuple[str, ...] = (),
+) -> Reply:
     current = now or theatre_now()
     intent = detect_intent(text).intent
     play = find_play_in_text(connection, text)
     artists = find_artists_in_text(connection, text)
+    if _looks_like_follow_up(text) and play is None and not artists:
+        play, artists = _last_context(connection, history)
+
+    normalized_text = text.casefold().replace("ё", "е")
+    if play is not None and intent == Intent.UNKNOWN:
+        if "кто" in normalized_text or "состав" in normalized_text or "роль" in normalized_text:
+            intent = Intent.PLAY_CAST
+        elif "о чем" in normalized_text or "режиссер" in normalized_text:
+            intent = Intent.PLAY_INFO
 
     if intent == Intent.GREETING:
         return Reply(text=render_template(connection, "greeting"))
@@ -173,7 +207,7 @@ def answer(connection: sqlite3.Connection, text: str, now: datetime | None = Non
 
     if len(artists) == 1:
         artist = artists[0]
-        normalized = text.casefold().replace("ё", "е")
+        normalized = normalized_text
         wants_nearest = "когда" in normalized or "ближайш" in normalized
         if wants_nearest:
             items = upcoming_for_artist(connection, artist.id, current, limit=3)

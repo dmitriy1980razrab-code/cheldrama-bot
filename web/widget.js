@@ -4,6 +4,13 @@ const closeButton = document.querySelector('#close-chat');
 const form = document.querySelector('#chat-form');
 const input = document.querySelector('#message');
 const messages = document.querySelector('#messages');
+const sessionKey = 'cheldrama_bot_session';
+let sessionId = localStorage.getItem(sessionKey);
+
+if (!sessionId && window.crypto && crypto.randomUUID) {
+  sessionId = crypto.randomUUID();
+  localStorage.setItem(sessionKey, sessionId);
+}
 
 function scrollToBottom() {
   messages.scrollTop = messages.scrollHeight;
@@ -42,10 +49,14 @@ async function sendMessage(text) {
     const response = await fetch('/api/chat', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({message: text}),
+      body: JSON.stringify({message: text, session_id: sessionId}),
     });
     if (!response.ok) throw new Error('request_failed');
     const data = await response.json();
+    if (data.session_id) {
+      sessionId = data.session_id;
+      localStorage.setItem(sessionKey, sessionId);
+    }
     addMessage(data.text, 'bot');
     data.cards.forEach(addCard);
   } catch {

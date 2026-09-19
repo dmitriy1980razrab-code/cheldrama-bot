@@ -25,12 +25,13 @@ if __name__ == "__main__":
     connection = connect(DATABASE_PATH)
     initialize(connection)
     print("Локальный бот запущен. Для выхода введите: выход")
+    history: list[str] = []
     try:
         while True:
             text = input("\nВы: ").strip()
             if text.casefold() in {"выход", "exit", "quit"}:
                 break
-            print_reply(answer(connection, text))
+            print_reply(answer(connection, text, history=tuple(history[-4:])))
+            history.append(text)
     finally:
         connection.close()
-
