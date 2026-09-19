@@ -7,10 +7,12 @@ import json
 from pathlib import Path
 from urllib.parse import urlparse
 import secrets
+from logging import Logger
 
 from theatre_bot.database import connect, initialize
 from theatre_bot.dialog import Reply, answer
 from theatre_bot.security import ConversationStore, RateLimiter, valid_session_id
+from theatre_bot.technical_log import create_technical_logger, record_error
 
 
 MAX_BODY_BYTES = 16_384
@@ -28,9 +30,11 @@ def create_handler(
     web_root: Path,
     conversations: ConversationStore | None = None,
     rate_limiter: RateLimiter | None = None,
+    technical_logger: Logger | None = None,
 ):
     conversation_store = conversations or ConversationStore()
     limiter = rate_limiter or RateLimiter()
+    logger = technical_logger or create_technical_logger(database_path.parent / "technical.log")
 
     class TheatreBotHandler(BaseHTTPRequestHandler):
         server_version = "TheatreBot/0.1"
@@ -77,6 +81,10 @@ def create_handler(
             except FileNotFoundError:
                 self._send_json(HTTPStatus.NOT_FOUND, {"error": "asset_not_found"})
                 return
+            except OSError as error:
+                record_error(logger, "http.static_asset", error)
+                self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "internal_error"})
+                return
             self._send_bytes(HTTPStatus.OK, body, content_type)
 
         def do_POST(self) -> None:
@@ -113,22 +121,32 @@ def create_handler(
                 self._send_json(HTTPStatus.TOO_MANY_REQUESTS, {"error": "rate_limit"})
                 return
 
-            connection = connect(database_path)
+            connection = None
             try:
+                connection = connect(database_path)
                 initialize(connection)
                 history = tuple(
                     turn.user_text for turn in conversation_store.get(session_id)
                 )
                 reply = answer(connection, message.strip(), history=history)
+            except Exception as error:
+                record_error(logger, "http.chat", error)
+                self._send_json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    {"error": "internal_error"},
+                )
+                return
             finally:
-                connection.close()
+                if connection is not None:
+                    connection.close()
             conversation_store.add(session_id, message.strip(), reply.text)
             response = serialize_reply(reply)
             response["session_id"] = session_id
             self._send_json(HTTPStatus.OK, response)
 
         def log_message(self, format: str, *args) -> None:
-            print(f"{self.address_string()} - {format % args}")
+            # Не выводим IP-адрес и строку запроса в технический журнал.
+            return
 
     return TheatreBotHandler
 
@@ -138,8 +156,12 @@ def run_server(
     web_root: Path,
     host: str = "127.0.0.1",
     port: int = 8080,
+    log_path: Path | None = None,
 ) -> None:
-    handler = create_handler(database_path, web_root)
+    technical_logger = create_technical_logger(
+        log_path or database_path.parent / "technical.log"
+    )
+    handler = create_handler(database_path, web_root, technical_logger=technical_logger)
     server = ThreadingHTTPServer((host, port), handler)
     print(f"Виджет доступен: http://{host}:{port}")
     print("Для остановки нажмите Ctrl+C")
