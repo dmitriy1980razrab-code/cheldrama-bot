@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
 import tempfile
@@ -6,7 +6,13 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
-from theatre_bot.database import connect, initialize, sync_affiche
+from theatre_bot.database import (
+    connect,
+    data_status,
+    initialize,
+    record_sync_success,
+    sync_affiche,
+)
 from theatre_bot.site_affiche import AfficheItem
 
 
@@ -55,7 +61,31 @@ class DatabaseTests(unittest.TestCase):
         stored = self.connection.execute("SELECT starts_at FROM performances").fetchone()[0]
         self.assertEqual(stored, "2026-09-20T18:00")
 
+    def test_successful_affiche_sync_records_status(self):
+        sync_affiche(self.connection, [item()])
+        row = self.connection.execute(
+            "SELECT item_count FROM sync_state WHERE component = 'affiche'"
+        ).fetchone()
+        self.assertEqual(row["item_count"], 1)
+
+    def test_data_status_detects_stale_component(self):
+        now = datetime(2026, 9, 19, 12, 0, tzinfo=timezone.utc)
+        record_sync_success(
+            self.connection,
+            "affiche",
+            10,
+            completed_at=now - timedelta(days=2),
+        )
+        statuses = {item.component: item for item in data_status(self.connection, now)}
+        self.assertTrue(statuses["affiche"].is_stale)
+        self.assertTrue(statuses["repertoire"].is_stale)
+
+    def test_data_status_accepts_recent_affiche(self):
+        now = datetime(2026, 9, 19, 12, 0, tzinfo=timezone.utc)
+        record_sync_success(self.connection, "affiche", 10, completed_at=now)
+        statuses = {item.component: item for item in data_status(self.connection, now)}
+        self.assertFalse(statuses["affiche"].is_stale)
+
 
 if __name__ == "__main__":
     unittest.main()
-

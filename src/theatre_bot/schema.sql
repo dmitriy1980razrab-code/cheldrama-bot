@@ -72,3 +72,9 @@ CREATE TABLE IF NOT EXISTS unrecognized_requests (
     created_at TEXT NOT NULL,
     reviewed_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS sync_state (
+    component TEXT PRIMARY KEY,
+    completed_at TEXT NOT NULL,
+    item_count INTEGER NOT NULL DEFAULT 0
+);

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import hashlib
 import sqlite3
@@ -17,6 +17,14 @@ class SyncReport:
     performances_added: int = 0
     performances_updated: int = 0
     performances_unchanged: int = 0
+
+
+@dataclass(frozen=True)
+class DataStatus:
+    component: str
+    completed_at: datetime | None
+    item_count: int
+    is_stale: bool
 
 
 def connect(database_path: str | Path) -> sqlite3.Connection:
@@ -44,6 +52,64 @@ def initialize(connection: sqlite3.Connection) -> None:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+SYNC_MAX_AGE = {
+    "affiche": timedelta(hours=36),
+    "repertoire": timedelta(days=7),
+    "play_details": timedelta(days=7),
+}
+
+
+def record_sync_success(
+    connection: sqlite3.Connection,
+    component: str,
+    item_count: int,
+    completed_at: datetime | None = None,
+) -> None:
+    if component not in SYNC_MAX_AGE:
+        raise ValueError("unknown sync component")
+    moment = completed_at or datetime.now(timezone.utc)
+    timestamp = moment.astimezone(timezone.utc).isoformat(timespec="seconds")
+    with connection:
+        connection.execute(
+            """
+            INSERT INTO sync_state (component, completed_at, item_count)
+            VALUES (?, ?, ?)
+            ON CONFLICT(component) DO UPDATE SET
+                completed_at = excluded.completed_at,
+                item_count = excluded.item_count
+            """,
+            (component, timestamp, max(0, item_count)),
+        )
+
+
+def data_status(
+    connection: sqlite3.Connection,
+    now: datetime | None = None,
+) -> list[DataStatus]:
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    rows = {
+        row["component"]: row
+        for row in connection.execute(
+            "SELECT component, completed_at, item_count FROM sync_state"
+        ).fetchall()
+    }
+    result = []
+    for component, max_age in SYNC_MAX_AGE.items():
+        row = rows.get(component)
+        completed_at = datetime.fromisoformat(row["completed_at"]) if row else None
+        if completed_at is not None and completed_at.tzinfo is None:
+            completed_at = completed_at.replace(tzinfo=timezone.utc)
+        result.append(
+            DataStatus(
+                component=component,
+                completed_at=completed_at,
+                item_count=row["item_count"] if row else 0,
+                is_stale=completed_at is None or current - completed_at > max_age,
+            )
+        )
+    return result
 
 
 def _normalize(value: str) -> str:
@@ -161,6 +227,7 @@ def sync_affiche(connection: sqlite3.Connection, items: list[AfficheItem]) -> Sy
             else:
                 performances_unchanged += 1
 
+    record_sync_success(connection, "affiche", len(items))
     return SyncReport(
         plays_added=plays_added,
         performances_added=performances_added,
@@ -292,6 +359,7 @@ def sync_repertoire(connection: sqlite3.Connection, items) -> tuple[int, int, in
                 connection.execute("UPDATE plays SET is_active = 0 WHERE id = ?", (row["id"],))
                 deactivated += 1
 
+    record_sync_success(connection, "repertoire", len(items))
     return added, updated, deactivated
 
 

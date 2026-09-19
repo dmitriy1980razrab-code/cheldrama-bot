@@ -4,7 +4,13 @@ import time
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
-from theatre_bot.database import connect, initialize, play_sources, save_play_details
+from theatre_bot.database import (
+    connect,
+    initialize,
+    play_sources,
+    record_sync_success,
+    save_play_details,
+)
 from theatre_bot.site_play import fetch_play_html, parse_play
 
 
@@ -23,6 +29,10 @@ if __name__ == "__main__":
             print(f"[{number}/{len(sources)}] {details.title}")
             if number < len(sources):
                 time.sleep(0.5)
+        detailed_count = connection.execute(
+            "SELECT count(*) FROM plays WHERE is_active = 1 AND summary IS NOT NULL"
+        ).fetchone()[0]
+        record_sync_success(connection, "play_details", detailed_count)
     finally:
         connection.close()
 

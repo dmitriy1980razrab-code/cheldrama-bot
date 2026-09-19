@@ -55,6 +55,15 @@ python scripts/show_unrecognized.py
 python scripts/show_templates.py
 ```
 
+Состояние обновления базы:
+
+```bash
+python scripts/show_data_status.py
+```
+
+Афиша считается устаревшей через 36 часов, репертуар и подробные сведения —
+через 7 дней после последнего успешного обновления.
+
 ## Локальный виджет сайта
 
 ```bash
