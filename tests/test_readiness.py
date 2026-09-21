@@ -27,6 +27,9 @@ class ReadinessTests(unittest.TestCase):
                 "scripts/sync_all.py",
                 "deploy/systemd/cheldrama-update.service",
                 "deploy/systemd/cheldrama-update.timer",
+                "scripts/backup_database.py",
+                "deploy/systemd/cheldrama-backup.service",
+                "deploy/systemd/cheldrama-backup.timer",
                 "docs/INTEGRATION_CHECKLIST.md",
             ):
                 path = root / relative

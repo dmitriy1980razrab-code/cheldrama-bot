@@ -12,6 +12,8 @@ class ServerDeploymentTests(unittest.TestCase):
         self.assertIn("theatre_data:/app/data", content)
         self.assertIn("no-new-privileges:true", content)
         self.assertIn("restart: unless-stopped", content)
+        self.assertIn("theatre_data:/app/data:ro", content)
+        self.assertIn("theatre_backups:/app/backups", content)
 
     def test_server_timer_runs_unified_updater(self):
         service = (

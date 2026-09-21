@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily backup of Cheldrama bot database
+
+[Timer]
+OnCalendar=*-*-* 05:00:00
+Persistent=true
+Unit=cheldrama-backup.service
+
+[Install]
+WantedBy=timers.target

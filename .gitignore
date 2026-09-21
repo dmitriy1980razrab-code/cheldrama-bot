@@ -5,6 +5,7 @@ __pycache__/
 *.sqlite3
 data/
 logs/
+backups/
 *.log
 *.log.*
 .idea/

@@ -30,5 +30,21 @@ services:
       - no-new-privileges:true
     command: ["python", "scripts/sync_all.py"]
 
+  backup:
+    build: .
+    profiles: ["jobs"]
+    init: true
+    read_only: true
+    environment:
+      THEATRE_BACKUP_DIR: "/app/backups"
+      THEATRE_BACKUP_KEEP: "14"
+    volumes:
+      - theatre_data:/app/data:ro
+      - theatre_backups:/app/backups
+    security_opt:
+      - no-new-privileges:true
+    command: ["python", "scripts/backup_database.py"]
+
 volumes:
   theatre_data:
+  theatre_backups:

@@ -1,0 +1,9 @@
+[Unit]
+Description=Create verified backup of Cheldrama bot database
+Requires=docker.service
+After=docker.service cheldrama-update.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/cheldrama-bot
+ExecStart=/usr/bin/docker compose --profile jobs run --rm backup
