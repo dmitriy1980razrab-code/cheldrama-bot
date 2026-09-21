@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily update of Cheldrama bot database
+
+[Timer]
+OnCalendar=*-*-* 04:00:00
+Persistent=true
+Unit=cheldrama-update.service
+
+[Install]
+WantedBy=timers.target

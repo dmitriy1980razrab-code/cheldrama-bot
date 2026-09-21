@@ -1,0 +1,9 @@
+[Unit]
+Description=Update Cheldrama bot database
+Requires=docker.service
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/cheldrama-bot
+ExecStart=/usr/bin/docker compose --profile jobs run --rm updater

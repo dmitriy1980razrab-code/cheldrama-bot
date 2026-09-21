@@ -1,0 +1,11 @@
+.git
+.gitignore
+.venv
+.env
+__pycache__
+*.pyc
+*.sqlite3
+data
+logs
+tests
+*.zip

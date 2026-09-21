@@ -1,0 +1,34 @@
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    init: true
+    read_only: true
+    environment:
+      THEATRE_BOT_HOST: "0.0.0.0"
+      THEATRE_BOT_PORT: "8080"
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - theatre_data:/app/data
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  updater:
+    build: .
+    profiles: ["jobs"]
+    init: true
+    read_only: true
+    volumes:
+      - theatre_data:/app/data
+    security_opt:
+      - no-new-privileges:true
+    command: ["python", "scripts/sync_all.py"]
+
+volumes:
+  theatre_data:
