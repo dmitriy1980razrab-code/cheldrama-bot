@@ -48,7 +48,9 @@ def run_update() -> None:
         report = sync_affiche(connection, affiche)
         print(
             f"Афиша: {len(affiche)}; добавлено: {report.performances_added}; "
-            f"обновлено: {report.performances_updated}"
+            f"обновлено: {report.performances_updated}; "
+            f"снято: {report.performances_removed}; "
+            f"завершено: {report.performances_completed}"
         )
 
         print("[3/3] Обновление сведений о спектаклях...")

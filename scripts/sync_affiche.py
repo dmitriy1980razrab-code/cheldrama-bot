@@ -27,4 +27,6 @@ if __name__ == "__main__":
     print(f"Спектаклей добавлено: {report.plays_added}")
     print(f"Событий добавлено: {report.performances_added}")
     print(f"Событий обновлено: {report.performances_updated}")
+    print(f"Событий снято с публикации: {report.performances_removed}")
+    print(f"Прошедших событий завершено: {report.performances_completed}")
     print(f"Без изменений: {report.performances_unchanged}")

@@ -17,6 +17,8 @@ class SyncReport:
     performances_added: int = 0
     performances_updated: int = 0
     performances_unchanged: int = 0
+    performances_removed: int = 0
+    performances_completed: int = 0
 
 
 @dataclass(frozen=True)
@@ -123,12 +125,26 @@ def _source_key(item: AfficheItem) -> str:
     return "site:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
 
 
-def sync_affiche(connection: sqlite3.Connection, items: list[AfficheItem]) -> SyncReport:
+def sync_affiche(
+    connection: sqlite3.Connection,
+    items: list[AfficheItem],
+    now: datetime | None = None,
+) -> SyncReport:
+    if not items:
+        raise ValueError("affiche source returned no events")
     plays_added = 0
     performances_added = 0
     performances_updated = 0
     performances_unchanged = 0
+    performances_removed = 0
+    performances_completed = 0
     synced_at = _now()
+    theatre_timezone = timezone(timedelta(hours=5))
+    reference = now or datetime.now(theatre_timezone)
+    if reference.tzinfo is not None:
+        reference = reference.astimezone(theatre_timezone).replace(tzinfo=None)
+    reference_text = reference.isoformat(timespec="minutes")
+    seen_keys = {_source_key(item) for item in items}
 
     with connection:
         for item in items:
@@ -227,12 +243,43 @@ def sync_affiche(connection: sqlite3.Connection, items: list[AfficheItem]) -> Sy
             else:
                 performances_unchanged += 1
 
+        completed = connection.execute(
+            """
+            UPDATE performances
+            SET status = 'completed', synced_at = ?
+            WHERE status = 'scheduled' AND starts_at < ?
+            """,
+            (synced_at, reference_text),
+        )
+        performances_completed = completed.rowcount
+
+        future_rows = connection.execute(
+            """
+            SELECT source_key FROM performances
+            WHERE status = 'scheduled' AND starts_at >= ?
+            """,
+            (reference_text,),
+        ).fetchall()
+        missing_keys = [row["source_key"] for row in future_rows if row["source_key"] not in seen_keys]
+        if missing_keys:
+            connection.executemany(
+                """
+                UPDATE performances
+                SET status = 'removed', synced_at = ?
+                WHERE source_key = ?
+                """,
+                [(synced_at, source_key) for source_key in missing_keys],
+            )
+            performances_removed = len(missing_keys)
+
     record_sync_success(connection, "affiche", len(items))
     return SyncReport(
         plays_added=plays_added,
         performances_added=performances_added,
         performances_updated=performances_updated,
         performances_unchanged=performances_unchanged,
+        performances_removed=performances_removed,
+        performances_completed=performances_completed,
     )
 
 

@@ -41,6 +41,7 @@ class DialogTests(unittest.TestCase):
                 event("Четвёртый спектакль", "2026-09-23T18:00", "4"),
                 event("Новогодняя сказка", "2026-12-25T12:00", "5"),
             ],
+            now=datetime(2026, 9, 18, 12, 0),
         )
         self.connection.execute(
             "UPDATE plays SET catalog_kind = 'children' WHERE title = 'Новогодняя сказка'"
