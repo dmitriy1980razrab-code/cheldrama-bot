@@ -44,6 +44,10 @@ class DatabaseTests(unittest.TestCase):
         report = sync_affiche(self.connection, [item()], now=datetime(2026, 9, 19, 12, 0))
         self.assertEqual(report.plays_added, 1)
         self.assertEqual(report.performances_added, 1)
+        duration = self.connection.execute(
+            "SELECT duration_minutes FROM plays"
+        ).fetchone()[0]
+        self.assertEqual(duration, 110)
 
     def test_second_sync_does_not_duplicate_records(self):
         sync_affiche(self.connection, [item()], now=datetime(2026, 9, 19, 12, 0))

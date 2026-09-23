@@ -37,7 +37,7 @@ function addCard(card) {
   link.href = card.play_url;
   link.target = '_blank';
   link.rel = 'noopener noreferrer';
-  link.textContent = 'Подробнее';
+  link.textContent = card.ticket_event_id ? 'Подробнее и билеты' : 'Подробнее';
   node.append(title, subtitle, details, link);
   messages.append(node);
 }

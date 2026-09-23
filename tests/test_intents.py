@@ -35,6 +35,15 @@ class IntentTests(unittest.TestCase):
     def test_typo_in_schedule(self):
         self.assertEqual(detect_intent("Покажи афишу и росписание").intent, Intent.SCHEDULE_NEAREST)
 
+    def test_duration(self):
+        self.assertEqual(detect_intent("Сколько длится спектакль?").intent, Intent.PLAY_DURATION)
+
+    def test_venue(self):
+        self.assertEqual(detect_intent("На какой сцене спектакль?").intent, Intent.PLAY_VENUE)
+
+    def test_age(self):
+        self.assertEqual(detect_intent("Что посмотреть ребёнку 10 лет?").intent, Intent.AGE)
+
 
 if __name__ == "__main__":
     unittest.main()

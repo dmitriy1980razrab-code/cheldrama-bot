@@ -24,6 +24,8 @@ class Play:
     title: str
     director: str | None
     summary: str | None
+    duration_minutes: int | None
+    age_rating: str | None
 
 
 @dataclass(frozen=True)
@@ -66,21 +68,29 @@ def find_play_in_text(connection: sqlite3.Connection, text: str) -> Play | None:
     normalized_text = _normalize(text)
     rows = connection.execute(
         """
-        SELECT id, title, normalized_title, director, summary
+        SELECT id, title, normalized_title, director, summary, duration_minutes, age_rating
         FROM plays WHERE is_active = 1
         ORDER BY length(normalized_title) DESC
         """
     ).fetchall()
     for row in rows:
         if row["normalized_title"] in normalized_text:
-            return Play(row["id"], row["title"], row["director"], row["summary"])
+            return Play(
+                row["id"], row["title"], row["director"], row["summary"],
+                row["duration_minutes"],
+                row["age_rating"],
+            )
     fuzzy_matches = [
         (_best_phrase_similarity(normalized_text, row["normalized_title"]), row)
         for row in rows
     ]
     score, row = max(fuzzy_matches, default=(0.0, None), key=lambda item: item[0])
     if row is not None and score >= 0.82:
-        return Play(row["id"], row["title"], row["director"], row["summary"])
+        return Play(
+            row["id"], row["title"], row["director"], row["summary"],
+            row["duration_minutes"],
+            row["age_rating"],
+        )
     return None
 
 
@@ -101,6 +111,47 @@ def upcoming_for_play(
         LIMIT ?
         """,
         (play_id, from_time.isoformat(timespec="minutes"), limit),
+    ).fetchall()
+    return _rows_to_performances(rows)
+
+
+def venues_for_play(
+    connection: sqlite3.Connection,
+    play_id: int,
+    from_time: datetime,
+) -> list[str]:
+    rows = connection.execute(
+        """
+        SELECT DISTINCT e.venue
+        FROM performances e
+        WHERE e.play_id = ? AND e.status = 'scheduled'
+          AND e.starts_at >= ? AND e.venue IS NOT NULL AND trim(e.venue) != ''
+        ORDER BY e.venue
+        """,
+        (play_id, from_time.isoformat(timespec="minutes")),
+    ).fetchall()
+    return [row["venue"] for row in rows]
+
+
+def upcoming_by_age(
+    connection: sqlite3.Connection,
+    viewer_age: int,
+    from_time: datetime,
+    limit: int = 10,
+) -> list[Performance]:
+    rows = connection.execute(
+        """
+        SELECT p.title, p.genre, p.age_rating, p.source_url AS play_url,
+               e.starts_at, e.venue, e.ticket_event_id
+        FROM performances e
+        JOIN plays p ON p.id = e.play_id
+        WHERE e.status = 'scheduled' AND e.starts_at >= ?
+          AND p.age_rating IS NOT NULL
+          AND CAST(replace(p.age_rating, '+', '') AS INTEGER) <= ?
+        ORDER BY e.starts_at, p.title
+        LIMIT ?
+        """,
+        (from_time.isoformat(timespec="minutes"), viewer_age, limit),
     ).fetchall()
     return _rows_to_performances(rows)
 

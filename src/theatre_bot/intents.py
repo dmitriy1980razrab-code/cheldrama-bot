@@ -18,6 +18,9 @@ class Intent(StrEnum):
     NEW_YEAR = "new_year"
     PLAY_INFO = "play.info"
     PLAY_CAST = "play.cast"
+    PLAY_DURATION = "play.duration"
+    PLAY_VENUE = "play.venue"
+    AGE = "age"
     ARTIST_PLAYS = "artist.plays"
     TICKET = "ticket"
     SUPPORT = "support"
@@ -35,6 +38,8 @@ _RULES: tuple[tuple[Intent, tuple[str, ...]], ...] = (
     (Intent.HELP, (r"\bчто (?:ты )?умеешь\b", r"\bкак пользоваться\b", r"\bпомощь\b", r"\bменю\b")),
     (Intent.SUPPORT, (r"\bподдержк", r"\bошибк", r"\bжалоб")),
     (Intent.TICKET, (r"\bбилет", r"\bкупить", r"\bцена", r"\bместа\b")),
+    (Intent.PLAY_DURATION, (r"\bсколько (?:ид[её]т|длится)\b", r"\bпродолжительност")),
+    (Intent.PLAY_VENUE, (r"\bкакая сцена\b", r"\bкакой сцене\b", r"\bгде проходит\b")),
     (Intent.SCHEDULE_WEEKEND, (r"\bвыходн",)),
     (Intent.SCHEDULE_WEEKDAY, (r"\bпонедельник", r"\bвторник", r"\bсред[ауе]", r"\bчетверг", r"\bпятниц", r"\bсуббот", r"\bвоскресен")),
     (Intent.SCHEDULE_WEEK, (r"\bна (?:этой |следующей )?неделе\b",)),
@@ -44,6 +49,7 @@ _RULES: tuple[tuple[Intent, tuple[str, ...]], ...] = (
     (Intent.PLAY_CAST, (r"\bкто играет\b", r"\bкто участвует\b", r"\bсостав\b", r"\bзанят в\b")),
     (Intent.ARTIST_PLAYS, (r"\bгде играет\b", r"\bспектакли с участием\b", r"\bлюбимый артист\b")),
     (Intent.PLAY_INFO, (r"\bо ч[её]м\b", r"\bописание\b", r"\bаннотац", r"\bрежисс[её]р")),
+    (Intent.AGE, (r"\b\d{1,2}\s*лет\b", r"\bпо возраст", r"\bдля (?:реб[её]нка|детей)\b")),
     (Intent.SCHEDULE_NEAREST, (r"\bафиша\b", r"\bчто ид[её]т\b", r"\bближайш", r"\bрасписан")),
 )
 

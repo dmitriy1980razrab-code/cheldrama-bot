@@ -20,6 +20,8 @@ from theatre_bot.queries import (
     plays_by_genre,
     upcoming_for_play,
     upcoming_for_artist,
+    upcoming_by_age,
+    venues_for_play,
 )
 
 
@@ -105,6 +107,45 @@ def _weekday_date(text: str, today: date) -> date | None:
 def _genre_fragment(text: str) -> str | None:
     normalized = text.casefold().replace("ё", "е")
     return next((value for stem, value in GENRES.items() if stem in normalized), None)
+
+
+def _requested_age(text: str) -> int | None:
+    normalized = text.casefold().replace("ё", "е")
+    match = re.search(r"(?<!\d)(\d{1,2})\s*(?:лет|год(?:а)?)\b", normalized)
+    if match:
+        age = int(match.group(1))
+        return age if 0 <= age <= 99 else None
+    match = re.search(r"(?<!\d)(\d{1,2})\+(?!\d)", normalized)
+    return int(match.group(1)) if match else None
+
+
+def _age_limit(value: str | None) -> int | None:
+    match = re.search(r"\d{1,2}", value or "")
+    return int(match.group()) if match else None
+
+
+def _filter_performances(items: list[Performance], text: str) -> list[Performance]:
+    genre = _genre_fragment(text)
+    age = _requested_age(text)
+    result = items
+    if genre:
+        result = [item for item in result if genre in (item.genre or "").casefold().replace("ё", "е")]
+    if age is not None:
+        result = [
+            item for item in result
+            if (limit := _age_limit(item.age_rating)) is not None and limit <= age
+        ]
+    return result
+
+
+def _format_duration(minutes: int) -> str:
+    hours, remainder = divmod(minutes, 60)
+    parts = []
+    if hours:
+        parts.append(f"{hours} ч")
+    if remainder:
+        parts.append(f"{remainder} мин")
+    return " ".join(parts)
 
 
 def _new_year_period(today: date) -> tuple[date, date]:
@@ -194,6 +235,35 @@ def answer(
             parts.append(f"Режиссёр-постановщик — {play.director}.")
         return Reply(text="\n\n".join(parts))
 
+    if play is not None and intent == Intent.PLAY_DURATION:
+        if play.duration_minutes is None:
+            return Reply(text=f"Продолжительность спектакля «{play.title}» пока не указана.")
+        return Reply(
+            text=f"Спектакль «{play.title}» идёт {_format_duration(play.duration_minutes)}."
+        )
+
+    if play is not None and intent == Intent.PLAY_VENUE:
+        venues = venues_for_play(connection, play.id, current)
+        if not venues:
+            return Reply(text=f"Сцена для ближайших показов «{play.title}» пока не указана.")
+        return Reply(text=f"Спектакль «{play.title}» проходит: {', '.join(venues)}.")
+
+    if play is not None and intent == Intent.TICKET:
+        return _reply_for_performances(
+            upcoming_for_play(connection, play.id, current, limit=3),
+            f"Выберите удобный показ спектакля «{play.title}». Актуальная стоимость и места доступны на официальной странице:",
+            f"Ближайших показов спектакля «{play.title}» для покупки билетов пока нет.",
+        )
+
+    if play is not None and intent == Intent.AGE:
+        age = _requested_age(text)
+        limit = _age_limit(play.age_rating)
+        if age is None or limit is None:
+            return Reply(text=f"Возрастная маркировка спектакля «{play.title}» — {play.age_rating or 'не указана'}.")
+        suitable = age >= limit
+        phrase = "подходит по возрастной маркировке" if suitable else "имеет более высокое возрастное ограничение"
+        return Reply(text=f"«{play.title}» — {play.age_rating}. Для зрителя {age} лет спектакль {phrase}.")
+
     if play is not None:
         return _reply_for_performances(
             upcoming_for_play(connection, play.id, current, limit=3),
@@ -232,6 +302,16 @@ def answer(
 
     if intent == Intent.GENRE:
         fragment = _genre_fragment(text)
+        age = _requested_age(text)
+        if age is not None:
+            items = _filter_performances(
+                upcoming_by_age(connection, age, current, limit=30), text
+            )[:10]
+            return _reply_for_performances(
+                items,
+                f"Подходящие спектакли для зрителя {age} лет:",
+                "Подходящих спектаклей в опубликованной афише пока не найдено.",
+            )
         items = plays_by_genre(connection, fragment or "") if fragment else []
         if not items:
             return Reply(text="Спектаклей этого жанра в действующем репертуаре не найдено.")
@@ -251,7 +331,7 @@ def answer(
 
     if intent == Intent.SCHEDULE_NEAREST:
         return _reply_for_performances(
-            nearest(connection, current, limit=3),
+            _filter_performances(nearest(connection, current, limit=30), text)[:3],
             render_template(connection, "schedule", "nearest"),
             "В ближайшее время спектаклей в афише не найдено.",
         )
@@ -261,7 +341,7 @@ def answer(
         if requested is None:
             return Reply(text="Уточните дату, пожалуйста, например: 25.09 или завтра.")
         return _reply_for_performances(
-            between_dates(connection, requested, requested),
+            _filter_performances(between_dates(connection, requested, requested), text),
             render_template(connection, "schedule", "date", date=requested.strftime('%d.%m.%Y')),
             "На выбранную дату спектаклей в афише нет.",
         )
@@ -269,7 +349,7 @@ def answer(
     if intent == Intent.SCHEDULE_WEEKEND:
         saturday, sunday = _weekend(current.date())
         return _reply_for_performances(
-            between_dates(connection, saturday, sunday),
+            _filter_performances(between_dates(connection, saturday, sunday), text),
             render_template(connection, "schedule", "weekend"),
             "На ближайшие выходные спектаклей в афише нет.",
         )
@@ -279,7 +359,7 @@ def answer(
         if requested is None:
             return Reply(text="Уточните день недели, пожалуйста.")
         return _reply_for_performances(
-            between_dates(connection, requested, requested),
+            _filter_performances(between_dates(connection, requested, requested), text),
             render_template(connection, "schedule", "date", date=requested.strftime('%d.%m.%Y')),
             "На указанный день спектаклей в афише нет.",
         )
@@ -291,9 +371,34 @@ def answer(
             monday += timedelta(days=7)
         sunday = monday + timedelta(days=6)
         return _reply_for_performances(
-            between_dates(connection, monday, sunday),
+            _filter_performances(between_dates(connection, monday, sunday), text),
             render_template(connection, "schedule", "week"),
             "На выбранной неделе спектаклей в афише нет.",
+        )
+
+    if intent == Intent.AGE:
+        age = _requested_age(text)
+        if age is None:
+            return Reply(text="Уточните возраст зрителя, например: «Что посмотреть ребёнку 10 лет?»")
+        return _reply_for_performances(
+            _filter_performances(
+                upcoming_by_age(connection, age, current, limit=30), text
+            )[:10],
+            f"По возрастной маркировке для зрителя {age} лет подходят:",
+            "Подходящих спектаклей в опубликованной афише пока не найдено.",
+        )
+
+    if intent == Intent.PLAY_DURATION:
+        return Reply(text="Уточните название спектакля, продолжительность которого Вас интересует.")
+
+    if intent == Intent.PLAY_VENUE:
+        return Reply(text="Уточните название спектакля, и я подскажу сцену ближайшего показа.")
+
+    if intent == Intent.TICKET:
+        return _reply_for_performances(
+            nearest(connection, current, limit=3),
+            "Выберите спектакль. Актуальная стоимость и наличие мест доступны на официальной странице:",
+            "Спектаклей для покупки билетов в опубликованной афише пока нет.",
         )
 
     log_unrecognized_request(connection, text)

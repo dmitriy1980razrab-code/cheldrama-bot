@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import hashlib
+import re
 import sqlite3
 
 from theatre_bot.site_affiche import AfficheItem
@@ -118,6 +119,18 @@ def _normalize(value: str) -> str:
     return " ".join(value.casefold().replace("ё", "е").split())
 
 
+def _duration_minutes(value: str | None) -> int | None:
+    if not value:
+        return None
+    normalized = value.casefold().replace("ё", "е")
+    hours = re.search(r"(\d+)\s*(?:час|ч\b)", normalized)
+    minutes = re.search(r"(\d+)\s*(?:минут|мин\b)", normalized)
+    total = (int(hours.group(1)) * 60 if hours else 0) + (
+        int(minutes.group(1)) if minutes else 0
+    )
+    return total or None
+
+
 def _source_key(item: AfficheItem) -> str:
     if item.ticket_event_id:
         return f"kassy:{item.ticket_event_id}"
@@ -158,8 +171,8 @@ def sync_affiche(
                     """
                     INSERT INTO plays (
                         source_url, title, normalized_title, genre, age_rating,
-                        image_url, synced_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        duration_minutes, image_url, synced_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         item.play_url,
@@ -167,6 +180,7 @@ def sync_affiche(
                         _normalize(item.title),
                         item.genre,
                         item.age_rating,
+                        _duration_minutes(item.duration),
                         item.image_url,
                         synced_at,
                     ),
@@ -179,6 +193,7 @@ def sync_affiche(
                     """
                     UPDATE plays
                     SET title = ?, normalized_title = ?, genre = ?, age_rating = ?,
+                        duration_minutes = COALESCE(?, duration_minutes),
                         image_url = ?, is_active = 1, synced_at = ?
                     WHERE id = ?
                     """,
@@ -187,6 +202,7 @@ def sync_affiche(
                         _normalize(item.title),
                         item.genre,
                         item.age_rating,
+                        _duration_minutes(item.duration),
                         item.image_url,
                         synced_at,
                         play_id,

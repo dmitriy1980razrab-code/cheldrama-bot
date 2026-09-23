@@ -46,6 +46,12 @@ class DialogTests(unittest.TestCase):
         self.connection.execute(
             "UPDATE plays SET catalog_kind = 'children' WHERE title = 'Новогодняя сказка'"
         )
+        self.connection.execute(
+            "UPDATE plays SET genre = 'Комедия', age_rating = '6+' WHERE title = 'Второй спектакль'"
+        )
+        self.connection.execute(
+            "UPDATE plays SET duration_minutes = 90 WHERE title = 'Первый спектакль'"
+        )
         self.connection.commit()
         first_play_id = self.connection.execute(
             "SELECT id FROM plays WHERE title = 'Первый спектакль'"
@@ -183,6 +189,47 @@ class DialogTests(unittest.TestCase):
         )
         self.assertIn("Иван Петров", reply.text)
         self.assertEqual(len(reply.cards), 1)
+
+    def test_age_returns_only_suitable_performances(self):
+        reply = answer(
+            self.connection,
+            "Что посмотреть ребёнку 10 лет?",
+            datetime(2026, 9, 18, 12, 0),
+        )
+        self.assertEqual([card.title for card in reply.cards], ["Второй спектакль"])
+
+    def test_genre_and_date_are_combined(self):
+        reply = answer(
+            self.connection,
+            "Какая комедия идёт 20.09?",
+            datetime(2026, 9, 18, 12, 0),
+        )
+        self.assertEqual([card.title for card in reply.cards], ["Второй спектакль"])
+
+    def test_play_duration(self):
+        reply = answer(
+            self.connection,
+            "Сколько длится Первый спектакль?",
+            datetime(2026, 9, 18, 12, 0),
+        )
+        self.assertIn("1 ч 30 мин", reply.text)
+
+    def test_play_venue(self):
+        reply = answer(
+            self.connection,
+            "На какой сцене Первый спектакль?",
+            datetime(2026, 9, 18, 12, 0),
+        )
+        self.assertIn("Большая сцена", reply.text)
+
+    def test_ticket_request_returns_official_cards(self):
+        reply = answer(
+            self.connection,
+            "Хочу купить билет",
+            datetime(2026, 9, 18, 12, 0),
+        )
+        self.assertIn("официальной странице", reply.text)
+        self.assertEqual(len(reply.cards), 3)
 
 
 if __name__ == "__main__":
