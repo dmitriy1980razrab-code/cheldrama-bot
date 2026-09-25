@@ -10,3 +10,5 @@ backups/
 *.log.*
 .idea/
 .vscode/
+
+*.egg-info/

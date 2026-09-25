@@ -7,8 +7,7 @@ name = "cheldrama-bot"
 version = "0.1.0"
 description = "Автономное ядро чат бота театра"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["cryptography>=43,<47"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
-

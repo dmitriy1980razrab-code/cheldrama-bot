@@ -25,8 +25,8 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _prune(destination: Path, keep: int) -> int:
-    archives = sorted(destination.glob("theatre-*.sqlite3.gz"), reverse=True)
+def _prune(destination: Path, keep: int, prefix: str) -> int:
+    archives = sorted(destination.glob(f"{prefix}-*.sqlite3.gz"), reverse=True)
     removed = 0
     for archive in archives[max(1, keep):]:
         checksum = archive.with_suffix(archive.suffix + ".sha256")
@@ -41,6 +41,7 @@ def create_database_backup(
     destination: str | Path,
     keep: int = 14,
     now: datetime | None = None,
+    prefix: str = "theatre",
 ) -> BackupResult:
     source_path = Path(database_path)
     if not source_path.is_file():
@@ -50,7 +51,9 @@ def create_database_backup(
     backup_dir.mkdir(parents=True, exist_ok=True)
     moment = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     stamp = moment.strftime("%Y%m%dT%H%M%SZ")
-    archive_path = backup_dir / f"theatre-{stamp}.sqlite3.gz"
+    if not prefix or not prefix.replace("-", "").isalnum():
+        raise ValueError("invalid backup prefix")
+    archive_path = backup_dir / f"{prefix}-{stamp}.sqlite3.gz"
     checksum_path = archive_path.with_suffix(archive_path.suffix + ".sha256")
     temp_database = backup_dir / f".{stamp}.sqlite3.tmp"
     temp_archive = backup_dir / f".{stamp}.sqlite3.gz.tmp"
@@ -82,7 +85,7 @@ def create_database_backup(
             encoding="ascii",
         )
         os.replace(temp_checksum, checksum_path)
-        removed = _prune(backup_dir, keep)
+        removed = _prune(backup_dir, keep, prefix)
         return BackupResult(archive_path, checksum_path, removed)
     finally:
         temp_database.unlink(missing_ok=True)

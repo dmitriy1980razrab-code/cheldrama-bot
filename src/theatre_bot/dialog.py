@@ -194,11 +194,21 @@ def _reply_for_performances(items: list[Performance], heading: str, empty: str) 
     return Reply(text=heading, cards=tuple(_card(item) for item in items))
 
 
+def _site_subscription_hint(channel: str) -> str:
+    if channel != "site":
+        return ""
+    return (
+        "\n\nЧтобы получать уведомления о переносе или отмене и напоминание "
+        "за сутки, оформите подписку в официальном боте театра в VK или MAX."
+    )
+
+
 def answer(
     connection: sqlite3.Connection,
     text: str,
     now: datetime | None = None,
     history: tuple[str, ...] = (),
+    channel: str = "local",
 ) -> Reply:
     current = now or theatre_now()
     intent = detect_intent(text).intent
@@ -251,7 +261,8 @@ def answer(
     if play is not None and intent == Intent.TICKET:
         return _reply_for_performances(
             upcoming_for_play(connection, play.id, current, limit=3),
-            f"Выберите удобный показ спектакля «{play.title}». Актуальная стоимость и места доступны на официальной странице:",
+            f"Выберите удобный показ спектакля «{play.title}». Актуальная стоимость и места доступны на официальной странице:"
+            + _site_subscription_hint(channel),
             f"Ближайших показов спектакля «{play.title}» для покупки билетов пока нет.",
         )
 
@@ -267,7 +278,8 @@ def answer(
     if play is not None:
         return _reply_for_performances(
             upcoming_for_play(connection, play.id, current, limit=3),
-            render_template(connection, "play", "upcoming", title=play.title),
+            render_template(connection, "play", "upcoming", title=play.title)
+            + _site_subscription_hint(channel),
             f"Ближайших показов спектакля «{play.title}» в афише нет.",
         )
 
@@ -401,5 +413,5 @@ def answer(
             "Спектаклей для покупки билетов в опубликованной афише пока нет.",
         )
 
-    log_unrecognized_request(connection, text)
+    log_unrecognized_request(connection, text, channel=channel)
     return Reply(text=render_template(connection, "fallback"))

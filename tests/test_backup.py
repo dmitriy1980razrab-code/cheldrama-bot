@@ -49,3 +49,12 @@ class BackupTests(unittest.TestCase):
                 now=start + timedelta(days=day),
             )
         self.assertEqual(len(list((self.root / "backups").glob("theatre-*.sqlite3.gz"))), 2)
+
+    def test_subscriber_backup_uses_separate_archive_series(self):
+        result = create_database_backup(
+            self.database,
+            self.root / "backups",
+            prefix="subscribers",
+        )
+        self.assertTrue(result.archive_path.name.startswith("subscribers-"))
+        self.assertTrue(result.checksum_path.is_file())

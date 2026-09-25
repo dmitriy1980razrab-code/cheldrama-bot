@@ -231,6 +231,31 @@ class DialogTests(unittest.TestCase):
         self.assertIn("официальной странице", reply.text)
         self.assertEqual(len(reply.cards), 3)
 
+    def test_site_unknown_request_is_not_stored_as_plain_text(self):
+        secret_text = "Неизвестный вопрос с личными сведениями"
+        answer(
+            self.connection,
+            secret_text,
+            datetime(2026, 9, 18, 12, 0),
+            channel="site",
+        )
+        row = self.connection.execute(
+            "SELECT channel, text FROM unrecognized_requests ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        self.assertEqual(row["channel"], "site")
+        self.assertTrue(row["text"].startswith("fingerprint:"))
+        self.assertNotIn(secret_text, row["text"])
+
+    def test_site_play_reply_offers_vk_or_max_notifications(self):
+        reply = answer(
+            self.connection,
+            "Первый спектакль",
+            datetime(2026, 9, 18, 12, 0),
+            channel="site",
+        )
+        self.assertIn("VK или MAX", reply.text)
+        self.assertIn("за сутки", reply.text)
+
 
 if __name__ == "__main__":
     unittest.main()

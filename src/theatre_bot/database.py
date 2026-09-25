@@ -431,11 +431,16 @@ def log_unrecognized_request(
     text: str,
     channel: str = "local",
 ) -> None:
+    stored_text = text
+    if channel == "site":
+        normalized = _normalize(text)
+        fingerprint = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:24]
+        stored_text = f"fingerprint:{fingerprint}"
     with connection:
         connection.execute(
             """
             INSERT INTO unrecognized_requests (channel, text, created_at)
             VALUES (?, ?, ?)
             """,
-            (channel, text, _now()),
+            (channel, stored_text, _now()),
         )

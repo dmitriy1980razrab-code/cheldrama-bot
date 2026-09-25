@@ -128,7 +128,12 @@ def create_handler(
                 history = tuple(
                     turn.user_text for turn in conversation_store.get(session_id)
                 )
-                reply = answer(connection, message.strip(), history=history)
+                reply = answer(
+                    connection,
+                    message.strip(),
+                    history=history,
+                    channel="site",
+                )
             except Exception as error:
                 record_error(logger, "http.chat", error)
                 self._send_json(
