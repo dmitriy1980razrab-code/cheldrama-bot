@@ -1,5 +1,6 @@
 __pycache__/
 *.py[cod]
+*.egg-info/
 .venv/
 .env
 *.sqlite3
@@ -10,5 +11,3 @@ backups/
 *.log.*
 .idea/
 .vscode/
-
-*.egg-info/
