@@ -69,3 +69,46 @@ CREATE TABLE IF NOT EXISTS subscriber_access_log (
 
 CREATE INDEX IF NOT EXISTS idx_subscriber_access_log_time
     ON subscriber_access_log(accessed_at);
+
+CREATE TABLE IF NOT EXISTS campaigns (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    message TEXT NOT NULL,
+    channel TEXT NOT NULL DEFAULT 'all'
+        CHECK (channel IN ('all', 'vk', 'max')),
+    target_type TEXT NOT NULL DEFAULT 'all'
+        CHECK (target_type IN ('all', 'play', 'artist', 'genre')),
+    target_key TEXT,
+    target_label TEXT,
+    status TEXT NOT NULL DEFAULT 'draft'
+        CHECK (status IN ('draft', 'approved', 'scheduled', 'cancelled', 'completed')),
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    approved_by TEXT,
+    approved_at TEXT,
+    scheduled_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS campaign_recipients (
+    id INTEGER PRIMARY KEY,
+    campaign_id INTEGER NOT NULL REFERENCES campaigns(id),
+    subscriber_id INTEGER NOT NULL REFERENCES subscribers(id),
+    status TEXT NOT NULL DEFAULT 'planned'
+        CHECK (status IN ('planned', 'sent', 'failed', 'skipped')),
+    reason TEXT,
+    sent_at TEXT,
+    UNIQUE (campaign_id, subscriber_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_campaign_recipients_status
+    ON campaign_recipients(campaign_id, status);
+
+CREATE TABLE IF NOT EXISTS campaign_events (
+    id INTEGER PRIMARY KEY,
+    campaign_id INTEGER NOT NULL REFERENCES campaigns(id),
+    actor TEXT NOT NULL,
+    event_type TEXT NOT NULL
+        CHECK (event_type IN ('created', 'previewed', 'approved', 'scheduled', 'cancelled')),
+    details TEXT,
+    recorded_at TEXT NOT NULL
+);
