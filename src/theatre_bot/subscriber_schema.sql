@@ -135,6 +135,9 @@ CREATE TABLE IF NOT EXISTS notification_queue (
     created_at TEXT NOT NULL,
     sent_at TEXT,
     failure_reason TEXT,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    last_attempt_at TEXT,
+    next_attempt_at TEXT,
     UNIQUE (subscriber_id, performance_key, notification_type, message)
 );
 

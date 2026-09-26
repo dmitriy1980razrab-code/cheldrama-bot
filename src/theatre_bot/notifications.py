@@ -6,6 +6,7 @@ import sqlite3
 from typing import Protocol
 
 from theatre_bot.subscribers import IdentityProtector
+from theatre_bot.update_lock import update_lock
 
 
 THEATRE_TIMEZONE = timezone(timedelta(hours=5))
@@ -31,6 +32,12 @@ class PendingNotification:
 class DeliveryReport:
     sent: int
     failed: int
+
+
+@dataclass(frozen=True)
+class NotificationCycleReport:
+    built: NotificationBuildReport
+    delivery: DeliveryReport
 
 
 class NotificationSender(Protocol):
@@ -221,7 +228,10 @@ def pending_notifications(
     connection: sqlite3.Connection,
     protector: IdentityProtector,
     limit: int = 100,
+    now: datetime | None = None,
+    max_attempts: int = 3,
 ) -> tuple[PendingNotification, ...]:
+    current = _timestamp(now or datetime.now(timezone.utc))
     rows = connection.execute(
         """
         SELECT q.id, q.notification_type, q.message,
@@ -229,7 +239,10 @@ def pending_notifications(
         FROM notification_queue q
         JOIN subscribers s ON s.id = q.subscriber_id
         JOIN subscriptions sub ON sub.id = q.subscription_id
-        WHERE q.status = 'pending' AND s.status = 'active'
+        WHERE q.status IN ('pending', 'failed')
+          AND q.attempt_count < ?
+          AND (q.next_attempt_at IS NULL OR q.next_attempt_at <= ?)
+          AND s.status = 'active'
           AND sub.status = 'active'
           AND s.external_id_encrypted IS NOT NULL
           AND (
@@ -240,7 +253,7 @@ def pending_notifications(
           ) = 'granted'
         ORDER BY q.id LIMIT ?
         """,
-        (max(1, min(limit, 1000)),),
+        (max(1, max_attempts), current, max(1, min(limit, 1000))),
     ).fetchall()
     return tuple(
         PendingNotification(
@@ -259,17 +272,41 @@ def mark_notification_result(
     failure_reason: str | None = None,
     at: datetime | None = None,
 ) -> None:
-    timestamp = _timestamp(at or datetime.now(timezone.utc)) if success else None
+    moment = at or datetime.now(timezone.utc)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    timestamp = _timestamp(moment)
     reason = None if success else (failure_reason or "delivery_failed")[:120]
     with connection:
-        connection.execute(
-            """
-            UPDATE notification_queue
-            SET status = ?, sent_at = ?, failure_reason = ?
-            WHERE id = ? AND status = 'pending'
-            """,
-            ("sent" if success else "failed", timestamp, reason, queue_id),
-        )
+        row = connection.execute(
+            "SELECT attempt_count FROM notification_queue WHERE id = ?",
+            (queue_id,),
+        ).fetchone()
+        if row is None:
+            return
+        attempt_count = row["attempt_count"] + 1
+        if success:
+            connection.execute(
+                """
+                UPDATE notification_queue
+                SET status = 'sent', sent_at = ?, failure_reason = NULL,
+                    attempt_count = ?, last_attempt_at = ?, next_attempt_at = NULL
+                WHERE id = ? AND status IN ('pending', 'failed')
+                """,
+                (timestamp, attempt_count, timestamp, queue_id),
+            )
+        else:
+            delay_minutes = min(60, 5 * (2 ** (attempt_count - 1)))
+            next_attempt = _timestamp(moment + timedelta(minutes=delay_minutes))
+            connection.execute(
+                """
+                UPDATE notification_queue
+                SET status = 'failed', sent_at = NULL, failure_reason = ?,
+                    attempt_count = ?, last_attempt_at = ?, next_attempt_at = ?
+                WHERE id = ? AND status IN ('pending', 'failed')
+                """,
+                (reason, attempt_count, timestamp, next_attempt, queue_id),
+            )
 
 
 def execute_pending_notifications(
@@ -281,7 +318,9 @@ def execute_pending_notifications(
 ) -> DeliveryReport:
     sent = 0
     failed = 0
-    for notification in pending_notifications(connection, protector, limit):
+    for notification in pending_notifications(
+        connection, protector, limit, now=at
+    ):
         try:
             sender.send(
                 notification.channel,
@@ -303,3 +342,44 @@ def execute_pending_notifications(
             )
             sent += 1
     return DeliveryReport(sent, failed)
+
+
+def run_notification_cycle(
+    theatre_connection: sqlite3.Connection,
+    subscriber_connection: sqlite3.Connection,
+    protector: IdentityProtector,
+    sender: NotificationSender,
+    now: datetime | None = None,
+    delivery_limit: int = 100,
+) -> NotificationCycleReport:
+    built = build_service_notifications(
+        theatre_connection, subscriber_connection, now
+    )
+    delivery = execute_pending_notifications(
+        subscriber_connection,
+        protector,
+        sender,
+        limit=max(1, min(delivery_limit, 1000)),
+        at=now,
+    )
+    return NotificationCycleReport(built, delivery)
+
+
+def run_locked_notification_cycle(
+    lock_path,
+    theatre_connection: sqlite3.Connection,
+    subscriber_connection: sqlite3.Connection,
+    protector: IdentityProtector,
+    sender: NotificationSender,
+    now: datetime | None = None,
+    delivery_limit: int = 100,
+) -> NotificationCycleReport:
+    with update_lock(lock_path):
+        return run_notification_cycle(
+            theatre_connection,
+            subscriber_connection,
+            protector,
+            sender,
+            now=now,
+            delivery_limit=delivery_limit,
+        )

@@ -15,6 +15,7 @@ from theatre_bot.notifications import (
     execute_pending_notifications,
     mark_notification_result,
     pending_notifications,
+    run_notification_cycle,
 )
 from theatre_bot.site_affiche import AfficheItem
 from theatre_bot.subscribers import (
@@ -177,6 +178,78 @@ class NotificationTests(unittest.TestCase):
         self.assertEqual((report.sent, report.failed), (0, 1))
         self.assertEqual(row["status"], "failed")
         self.assertEqual(row["failure_reason"], "RuntimeError")
+
+    def test_failed_delivery_waits_before_retry(self):
+        class FailingSender:
+            def send(self, channel, external_id, message):
+                raise RuntimeError("temporary")
+
+        moment = datetime(2026, 10, 2, 19, 0, tzinfo=THEATRE_TZ)
+        build_service_notifications(self.theatre, self.subscribers, moment)
+        execute_pending_notifications(
+            self.subscribers, self.protector, FailingSender(), at=moment
+        )
+        self.assertEqual(
+            pending_notifications(
+                self.subscribers, self.protector, now=moment + timedelta(minutes=4)
+            ),
+            (),
+        )
+        self.assertEqual(
+            len(pending_notifications(
+                self.subscribers, self.protector, now=moment + timedelta(minutes=5)
+            )),
+            1,
+        )
+
+    def test_retry_stops_after_three_failures(self):
+        class FailingSender:
+            def send(self, channel, external_id, message):
+                raise RuntimeError("temporary")
+
+        moment = datetime(2026, 10, 2, 19, 0, tzinfo=THEATRE_TZ)
+        build_service_notifications(self.theatre, self.subscribers, moment)
+        for offset in (0, 5, 15):
+            execute_pending_notifications(
+                self.subscribers, self.protector, FailingSender(),
+                at=moment + timedelta(minutes=offset),
+            )
+        self.assertEqual(
+            pending_notifications(
+                self.subscribers, self.protector, now=moment + timedelta(hours=2)
+            ),
+            (),
+        )
+
+    def test_cycle_limits_number_of_deliveries(self):
+        second_id = "vk-2"
+        for consent_type in ("personal_data", "service_notifications"):
+            record_consent(
+                self.subscribers, self.protector, "vk", second_id,
+                consent_type, "v1", True, "test", self.now,
+                display_name="Борис",
+            )
+        subscribe_to_play(
+            self.subscribers, self.protector, "vk", second_id,
+            PLAY_URL, "Гамлет", self.now,
+        )
+        sender = MemoryNotificationSender()
+        report = run_notification_cycle(
+            self.theatre,
+            self.subscribers,
+            self.protector,
+            sender,
+            now=datetime(2026, 10, 2, 19, 0, tzinfo=THEATRE_TZ),
+            delivery_limit=1,
+        )
+        self.assertEqual(report.delivery.sent, 1)
+        self.assertEqual(len(sender.deliveries), 1)
+        self.assertEqual(
+            self.subscribers.execute(
+                "SELECT count(*) FROM notification_queue WHERE status = 'pending'"
+            ).fetchone()[0],
+            1,
+        )
 
 
 if __name__ == "__main__":

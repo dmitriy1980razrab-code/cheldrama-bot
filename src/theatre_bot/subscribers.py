@@ -114,6 +114,20 @@ def initialize_subscribers(connection: sqlite3.Connection) -> None:
         connection.execute(
             "ALTER TABLE subscribers ADD COLUMN display_name_encrypted BLOB"
         )
+    queue_columns = {
+        row["name"]
+        for row in connection.execute("PRAGMA table_info(notification_queue)").fetchall()
+    }
+    queue_migrations = {
+        "attempt_count": "INTEGER NOT NULL DEFAULT 0",
+        "last_attempt_at": "TEXT",
+        "next_attempt_at": "TEXT",
+    }
+    for column, definition in queue_migrations.items():
+        if column not in queue_columns:
+            connection.execute(
+                f"ALTER TABLE notification_queue ADD COLUMN {column} {definition}"
+            )
     connection.commit()
 
 
