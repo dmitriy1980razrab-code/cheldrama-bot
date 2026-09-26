@@ -345,6 +345,36 @@ def available_subscription_actions(
     return ("subscribe",)
 
 
+def configure_play_notifications(
+    connection: sqlite3.Connection,
+    protector: IdentityProtector,
+    channel: str,
+    external_id: str,
+    play_key: str,
+    notify_changes: bool,
+    remind_24h: bool,
+) -> bool:
+    if not notify_changes and not remind_24h:
+        raise ValueError("at least one notification type is required")
+    identity_hash = protector.lookup_hash(channel, external_id)
+    with connection:
+        cursor = connection.execute(
+            """
+            UPDATE subscriptions
+            SET notify_changes = ?, remind_24h = ?
+            WHERE subscriber_id = (
+                SELECT id FROM subscribers
+                WHERE channel = ? AND external_id_hash = ? AND status = 'active'
+            ) AND topic_type = 'play' AND topic_key = ? AND status = 'active'
+            """,
+            (
+                int(notify_changes), int(remind_24h),
+                channel, identity_hash, play_key,
+            ),
+        )
+    return cursor.rowcount == 1
+
+
 def subscriber_stats(connection: sqlite3.Connection) -> SubscriberStats:
     active_by_channel = {
         row["channel"]: row["count"]
