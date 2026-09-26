@@ -134,6 +134,12 @@ python scripts/run_admin_demo.py
 python scripts/demo_subscription_flow.py
 ```
 
+Демонстрация очереди напоминаний и изменений афиши:
+
+```bash
+python scripts/demo_notifications.py
+```
+
 Требования для будущего подключения сайта, VK и MAX находятся в
 `docs/INTEGRATION_CHECKLIST.md`.
 

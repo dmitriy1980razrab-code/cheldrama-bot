@@ -112,3 +112,31 @@ CREATE TABLE IF NOT EXISTS campaign_events (
     details TEXT,
     recorded_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS performance_observations (
+    source_key TEXT PRIMARY KEY,
+    play_key TEXT NOT NULL,
+    play_title TEXT NOT NULL,
+    starts_at TEXT NOT NULL,
+    status TEXT NOT NULL,
+    observed_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS notification_queue (
+    id INTEGER PRIMARY KEY,
+    subscriber_id INTEGER NOT NULL REFERENCES subscribers(id),
+    subscription_id INTEGER NOT NULL REFERENCES subscriptions(id),
+    performance_key TEXT NOT NULL,
+    notification_type TEXT NOT NULL
+        CHECK (notification_type IN ('rescheduled', 'removed', 'reminder_24h')),
+    message TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'sent', 'failed', 'cancelled')),
+    created_at TEXT NOT NULL,
+    sent_at TEXT,
+    failure_reason TEXT,
+    UNIQUE (subscriber_id, performance_key, notification_type, message)
+);
+
+CREATE INDEX IF NOT EXISTS idx_notification_queue_status
+    ON notification_queue(status, created_at);
