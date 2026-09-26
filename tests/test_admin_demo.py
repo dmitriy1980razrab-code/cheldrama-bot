@@ -10,9 +10,11 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 from theatre_bot.admin_demo import (
     AdminDemoSecurity,
+    parse_scheduled_at,
     render_dashboard,
     seed_admin_demo,
 )
+from theatre_bot.campaigns import approve_campaign, create_campaign
 from theatre_bot.subscribers import IdentityProtector, connect_subscribers, initialize_subscribers
 
 
@@ -52,6 +54,42 @@ class AdminDemoTests(unittest.TestCase):
             connection.close()
             self.assertNotIn("<script>alert(1)</script>", page)
             self.assertIn("&lt;script&gt;", page)
+
+    def test_schedule_time_uses_theatre_timezone(self):
+        value = parse_scheduled_at("2026-10-01T19:00")
+        self.assertEqual(value.utcoffset(), timedelta(hours=5))
+
+    def test_dashboard_offers_approval_for_draft_campaign(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "subscribers.sqlite3"
+            protector = IdentityProtector(Fernet.generate_key(), b"e" * 32)
+            seed_admin_demo(path, protector)
+            connection = connect_subscribers(path)
+            initialize_subscribers(connection)
+            create_campaign(
+                connection, "Кампания", "Сообщение", "admin",
+                target_type="play", target_key="hamlet", target_label="Гамлет",
+            )
+            page = render_dashboard(connection, protector, "csrf-token").decode("utf-8")
+            connection.close()
+            self.assertIn("Кампания", page)
+            self.assertIn("Подтвердить", page)
+
+    def test_dashboard_offers_scheduling_after_approval(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "subscribers.sqlite3"
+            protector = IdentityProtector(Fernet.generate_key(), b"f" * 32)
+            seed_admin_demo(path, protector)
+            connection = connect_subscribers(path)
+            initialize_subscribers(connection)
+            campaign_id = create_campaign(
+                connection, "Кампания", "Сообщение", "admin",
+                target_type="play", target_key="hamlet", target_label="Гамлет",
+            )
+            approve_campaign(connection, campaign_id, "director")
+            page = render_dashboard(connection, protector, "csrf-token").decode("utf-8")
+            connection.close()
+            self.assertIn("Запланировать", page)
 
 
 if __name__ == "__main__":

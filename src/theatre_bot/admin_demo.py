@@ -14,7 +14,12 @@ import threading
 
 from cryptography.fernet import Fernet
 
-from theatre_bot.campaigns import create_campaign, preview_campaign
+from theatre_bot.campaigns import (
+    approve_campaign,
+    create_campaign,
+    preview_campaign,
+    schedule_campaign,
+)
 from theatre_bot.demo_channel import _add_demo_subscriber
 from theatre_bot.subscribers import (
     IdentityProtector,
@@ -27,6 +32,7 @@ from theatre_bot.subscribers import (
 
 SESSION_LIFETIME = timedelta(minutes=30)
 MAX_BODY_BYTES = 16_384
+THEATRE_TIMEZONE = timezone(timedelta(hours=5))
 
 
 @dataclass(frozen=True)
@@ -133,11 +139,50 @@ def render_dashboard(connection: sqlite3.Connection, protector: IdentityProtecto
             f"<td>{escape(profile.external_id)}</td>"
             f"<td>{escape(preferences)}</td><td>{marketing}</td></tr>"
         )
+    campaign_rows = []
+    status_names = {
+        "draft": "черновик",
+        "approved": "подтверждена",
+        "scheduled": "запланирована",
+        "cancelled": "отменена",
+        "completed": "завершена",
+    }
+    default_schedule = (datetime.now(THEATRE_TIMEZONE) + timedelta(days=1)).strftime(
+        "%Y-%m-%dT%H:%M"
+    )
+    for campaign in connection.execute(
+        "SELECT * FROM campaigns ORDER BY id DESC LIMIT 20"
+    ).fetchall():
+        action = "—"
+        if campaign["status"] == "draft":
+            action = (
+                '<form method="post" action="/campaign/approve">'
+                f'<input type="hidden" name="csrf" value="{escape(csrf)}">'
+                f'<input type="hidden" name="campaign_id" value="{campaign["id"]}">'
+                '<button type="submit">Подтвердить</button></form>'
+            )
+        elif campaign["status"] == "approved":
+            action = (
+                '<form method="post" action="/campaign/schedule">'
+                f'<input type="hidden" name="csrf" value="{escape(csrf)}">'
+                f'<input type="hidden" name="campaign_id" value="{campaign["id"]}">'
+                f'<input type="datetime-local" name="scheduled_at" value="{default_schedule}" required>'
+                '<button type="submit">Запланировать</button></form>'
+            )
+        campaign_rows.append(
+            "<tr>"
+            f'<td>{campaign["id"]}</td><td>{escape(campaign["name"])}</td>'
+            f'<td>{escape(campaign["target_label"] or "Все")}</td>'
+            f'<td>{escape(status_names.get(campaign["status"], campaign["status"]))}</td>'
+            f'<td>{escape(campaign["scheduled_at"] or "—")}</td><td>{action}</td></tr>'
+        )
     body = f"""
 <section class="box"><h2>Сводка</h2><p>Активных подписчиков: {sum(stats.active_by_channel.values())}.
 С рекламным согласием: {stats.marketing_consents}.</p></section>
 <section class="box"><h2>Подписчики</h2><table><thead><tr><th>Имя</th><th>Канал</th><th>ID</th>
 <th>Предпочтения</th><th>Реклама разрешена</th></tr></thead><tbody>{''.join(rows)}</tbody></table></section>
+<section class="box"><h2>Кампании</h2><table><thead><tr><th>ID</th><th>Название</th><th>Интерес</th>
+<th>Статус</th><th>Отправка</th><th>Действие</th></tr></thead><tbody>{''.join(campaign_rows) or '<tr><td colspan="6">Кампаний пока нет</td></tr>'}</tbody></table></section>
 <section class="box"><h2>Новая тестовая кампания</h2><form method="post" action="/campaign/preview">
 <input type="hidden" name="csrf" value="{escape(csrf)}"><label>Название</label>
 <input name="name" required value="Предложение зрителям"><label>Канал</label>
@@ -149,7 +194,7 @@ def render_dashboard(connection: sqlite3.Connection, protector: IdentityProtecto
     return _page("Административная панель", body)
 
 
-def render_preview(name: str, recipients, csrf: str) -> bytes:
+def render_preview(name: str, campaign_id: int, recipients, csrf: str) -> bytes:
     rows = "".join(
         f"<li>{escape(item.display_name or '—')} — {escape(item.channel.upper())} — {escape(item.external_id)}</li>"
         for item in recipients
@@ -158,8 +203,22 @@ def render_preview(name: str, recipients, csrf: str) -> bytes:
         "Предварительный просмотр",
         f'<section class="box"><h2>{escape(name)}</h2><p class="ok">Получателей: {len(recipients)}</p>'
         f"<ul>{rows}</ul><p class='note'>Сообщения не отправлены. Это только проверка аудитории.</p>"
-        '<p><a href="/admin">Вернуться в панель</a></p></section>',
+        '<form method="post" action="/campaign/approve">'
+        f'<input type="hidden" name="csrf" value="{escape(csrf)}">'
+        f'<input type="hidden" name="campaign_id" value="{campaign_id}">'
+        '<button type="submit">Подтвердить кампанию</button></form>'
+        '<p><a href="/admin">Вернуться без подтверждения</a></p></section>',
     )
+
+
+def parse_scheduled_at(value: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as error:
+        raise ValueError("invalid schedule date") from error
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=THEATRE_TIMEZONE)
+    return parsed
 
 
 def create_admin_demo_handler(
@@ -246,33 +305,52 @@ def create_admin_demo_handler(
                 self._redirect("/admin", cookie)
                 return
             session_id = self._session_id()
-            if path != "/campaign/preview" or not security.valid_csrf(
+            if path not in {"/campaign/preview", "/campaign/approve", "/campaign/schedule"} or not security.valid_csrf(
                 session_id, form.get("csrf", "")
             ):
                 self._send(HTTPStatus.FORBIDDEN, _page("Доступ запрещён", "<p>Проверка безопасности не пройдена.</p>"))
                 return
-            target_parts = form.get("target", "").split("|", 1)
-            if len(target_parts) != 2:
-                self._send(HTTPStatus.BAD_REQUEST, _page("Ошибка", "<p>Некорректная аудитория.</p>"))
-                return
             connection = connect_subscribers(database_path)
             initialize_subscribers(connection)
             try:
-                campaign_id = create_campaign(
-                    connection,
-                    form.get("name", ""),
-                    form.get("message", ""),
-                    "demo-admin",
-                    channel=form.get("channel", "all"),
-                    target_type="play",
-                    target_key=target_parts[0],
-                    target_label=target_parts[1],
-                )
-                preview = preview_campaign(
-                    connection, protector, campaign_id,
-                    "demo-admin", "browser_demo_preview",
-                )
-                body = render_preview(form.get("name", ""), preview.recipients, "")
+                if path == "/campaign/preview":
+                    target_parts = form.get("target", "").split("|", 1)
+                    if len(target_parts) != 2:
+                        raise ValueError("invalid target")
+                    campaign_id = create_campaign(
+                        connection,
+                        form.get("name", ""),
+                        form.get("message", ""),
+                        "demo-admin",
+                        channel=form.get("channel", "all"),
+                        target_type="play",
+                        target_key=target_parts[0],
+                        target_label=target_parts[1],
+                    )
+                    preview = preview_campaign(
+                        connection, protector, campaign_id,
+                        "demo-admin", "browser_demo_preview",
+                    )
+                    session = security.session(session_id)
+                    body = render_preview(
+                        form.get("name", ""), campaign_id, preview.recipients,
+                        session.csrf_token if session else "",
+                    )
+                elif path == "/campaign/approve":
+                    approve_campaign(
+                        connection, int(form.get("campaign_id", "")), "demo-director"
+                    )
+                    self._redirect("/admin")
+                    return
+                else:
+                    schedule_campaign(
+                        connection,
+                        int(form.get("campaign_id", "")),
+                        parse_scheduled_at(form.get("scheduled_at", "")),
+                        "demo-admin",
+                    )
+                    self._redirect("/admin")
+                    return
             except (ValueError, LookupError, sqlite3.Error):
                 body = _page("Ошибка", "<p>Не удалось подготовить кампанию.</p>")
                 self._send(HTTPStatus.BAD_REQUEST, body)
