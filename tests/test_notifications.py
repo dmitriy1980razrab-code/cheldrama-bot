@@ -10,7 +10,9 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 from theatre_bot.database import connect, initialize, sync_affiche
 from theatre_bot.notifications import (
+    MemoryNotificationSender,
     build_service_notifications,
+    execute_pending_notifications,
     mark_notification_result,
     pending_notifications,
 )
@@ -138,6 +140,43 @@ class NotificationTests(unittest.TestCase):
         ).fetchone()
         self.assertEqual(row["status"], "sent")
         self.assertIsNotNone(row["sent_at"])
+
+    def test_memory_sender_executes_queue_without_network(self):
+        build_service_notifications(
+            self.theatre, self.subscribers,
+            datetime(2026, 10, 2, 19, 0, tzinfo=THEATRE_TZ),
+        )
+        sender = MemoryNotificationSender()
+        report = execute_pending_notifications(
+            self.subscribers, self.protector, sender, at=self.now
+        )
+        self.assertEqual((report.sent, report.failed), (1, 0))
+        self.assertEqual(sender.deliveries[0][1], "vk-1")
+        self.assertEqual(
+            self.subscribers.execute(
+                "SELECT status FROM notification_queue"
+            ).fetchone()[0],
+            "sent",
+        )
+
+    def test_delivery_failure_records_only_exception_type(self):
+        class FailingSender:
+            def send(self, channel, external_id, message):
+                raise RuntimeError("secret external data")
+
+        build_service_notifications(
+            self.theatre, self.subscribers,
+            datetime(2026, 10, 2, 19, 0, tzinfo=THEATRE_TZ),
+        )
+        report = execute_pending_notifications(
+            self.subscribers, self.protector, FailingSender(), at=self.now
+        )
+        row = self.subscribers.execute(
+            "SELECT status, failure_reason FROM notification_queue"
+        ).fetchone()
+        self.assertEqual((report.sent, report.failed), (0, 1))
+        self.assertEqual(row["status"], "failed")
+        self.assertEqual(row["failure_reason"], "RuntimeError")
 
 
 if __name__ == "__main__":

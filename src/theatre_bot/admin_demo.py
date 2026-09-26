@@ -21,6 +21,7 @@ from theatre_bot.campaigns import (
     schedule_campaign,
 )
 from theatre_bot.demo_channel import _add_demo_subscriber
+from theatre_bot.notifications import MemoryNotificationSender, execute_pending_notifications
 from theatre_bot.subscribers import (
     IdentityProtector,
     connect_subscribers,
@@ -94,6 +95,28 @@ def seed_admin_demo(database_path: Path, protector: IdentityProtector) -> None:
         connection, protector, "vk", "demo-vk-maria", "Мария",
         "hamlet", "Гамлет", False, now,
     )
+    anna = connection.execute(
+        """
+        SELECT s.id AS subscriber_id, sub.id AS subscription_id
+        FROM subscribers s JOIN subscriptions sub ON sub.subscriber_id = s.id
+        WHERE s.channel = 'vk' AND sub.topic_key = 'hamlet'
+        ORDER BY s.id LIMIT 1
+        """
+    ).fetchone()
+    connection.execute(
+        """
+        INSERT INTO notification_queue (
+            subscriber_id, subscription_id, performance_key,
+            notification_type, message, created_at
+        ) VALUES (?, ?, 'demo-performance', 'reminder_24h', ?, ?)
+        """,
+        (
+            anna["subscriber_id"], anna["subscription_id"],
+            "Напоминаем: спектакль «Гамлет» состоится завтра в 19:00.",
+            now.isoformat(timespec="seconds"),
+        ),
+    )
+    connection.commit()
     connection.close()
 
 
@@ -176,6 +199,23 @@ def render_dashboard(connection: sqlite3.Connection, protector: IdentityProtecto
             f'<td>{escape(status_names.get(campaign["status"], campaign["status"]))}</td>'
             f'<td>{escape(campaign["scheduled_at"] or "—")}</td><td>{action}</td></tr>'
         )
+    notification_rows = []
+    for notification in connection.execute(
+        """
+        SELECT notification_type, message, status, created_at, sent_at
+        FROM notification_queue ORDER BY id DESC LIMIT 20
+        """
+    ).fetchall():
+        notification_rows.append(
+            "<tr>"
+            f'<td>{escape(notification["notification_type"])}</td>'
+            f'<td>{escape(notification["message"])}</td>'
+            f'<td>{escape(notification["status"])}</td>'
+            f'<td>{escape(notification["sent_at"] or "—")}</td></tr>'
+        )
+    pending_count = connection.execute(
+        "SELECT count(*) FROM notification_queue WHERE status = 'pending'"
+    ).fetchone()[0]
     body = f"""
 <section class="box"><h2>Сводка</h2><p>Активных подписчиков: {sum(stats.active_by_channel.values())}.
 С рекламным согласием: {stats.marketing_consents}.</p></section>
@@ -183,6 +223,11 @@ def render_dashboard(connection: sqlite3.Connection, protector: IdentityProtecto
 <th>Предпочтения</th><th>Реклама разрешена</th></tr></thead><tbody>{''.join(rows)}</tbody></table></section>
 <section class="box"><h2>Кампании</h2><table><thead><tr><th>ID</th><th>Название</th><th>Интерес</th>
 <th>Статус</th><th>Отправка</th><th>Действие</th></tr></thead><tbody>{''.join(campaign_rows) or '<tr><td colspan="6">Кампаний пока нет</td></tr>'}</tbody></table></section>
+<section class="box"><h2>Сервисные уведомления</h2><p>Ожидают тестовой доставки: {pending_count}.</p>
+<form method="post" action="/notifications/deliver-demo"><input type="hidden" name="csrf" value="{escape(csrf)}">
+<button type="submit">Выполнить тестовую доставку</button></form>
+<table><thead><tr><th>Тип</th><th>Сообщение</th><th>Статус</th><th>Отправлено</th></tr></thead>
+<tbody>{''.join(notification_rows) or '<tr><td colspan="4">Уведомлений пока нет</td></tr>'}</tbody></table></section>
 <section class="box"><h2>Новая тестовая кампания</h2><form method="post" action="/campaign/preview">
 <input type="hidden" name="csrf" value="{escape(csrf)}"><label>Название</label>
 <input name="name" required value="Предложение зрителям"><label>Канал</label>
@@ -305,7 +350,7 @@ def create_admin_demo_handler(
                 self._redirect("/admin", cookie)
                 return
             session_id = self._session_id()
-            if path not in {"/campaign/preview", "/campaign/approve", "/campaign/schedule"} or not security.valid_csrf(
+            if path not in {"/campaign/preview", "/campaign/approve", "/campaign/schedule", "/notifications/deliver-demo"} or not security.valid_csrf(
                 session_id, form.get("csrf", "")
             ):
                 self._send(HTTPStatus.FORBIDDEN, _page("Доступ запрещён", "<p>Проверка безопасности не пройдена.</p>"))
@@ -313,6 +358,12 @@ def create_admin_demo_handler(
             connection = connect_subscribers(database_path)
             initialize_subscribers(connection)
             try:
+                if path == "/notifications/deliver-demo":
+                    execute_pending_notifications(
+                        connection, protector, MemoryNotificationSender()
+                    )
+                    self._redirect("/admin")
+                    return
                 if path == "/campaign/preview":
                     target_parts = form.get("target", "").split("|", 1)
                     if len(target_parts) != 2:

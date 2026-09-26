@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import sqlite3
+from typing import Protocol
 
 from theatre_bot.subscribers import IdentityProtector
 
@@ -24,6 +25,29 @@ class PendingNotification:
     external_id: str
     notification_type: str
     message: str
+
+
+@dataclass(frozen=True)
+class DeliveryReport:
+    sent: int
+    failed: int
+
+
+class NotificationSender(Protocol):
+    def send(self, channel: str, external_id: str, message: str) -> None:
+        """Передать сообщение адаптеру канала."""
+
+
+class MemoryNotificationSender:
+    """Безопасный тестовый отправитель без сетевых запросов."""
+
+    def __init__(self) -> None:
+        self.deliveries: list[tuple[str, str, str]] = []
+
+    def send(self, channel: str, external_id: str, message: str) -> None:
+        if channel not in {"vk", "max"}:
+            raise ValueError("unknown channel")
+        self.deliveries.append((channel, external_id, message))
 
 
 def _timestamp(moment: datetime) -> str:
@@ -246,3 +270,36 @@ def mark_notification_result(
             """,
             ("sent" if success else "failed", timestamp, reason, queue_id),
         )
+
+
+def execute_pending_notifications(
+    connection: sqlite3.Connection,
+    protector: IdentityProtector,
+    sender: NotificationSender,
+    limit: int = 100,
+    at: datetime | None = None,
+) -> DeliveryReport:
+    sent = 0
+    failed = 0
+    for notification in pending_notifications(connection, protector, limit):
+        try:
+            sender.send(
+                notification.channel,
+                notification.external_id,
+                notification.message,
+            )
+        except Exception as error:
+            mark_notification_result(
+                connection,
+                notification.queue_id,
+                False,
+                failure_reason=type(error).__name__,
+                at=at,
+            )
+            failed += 1
+        else:
+            mark_notification_result(
+                connection, notification.queue_id, True, at=at
+            )
+            sent += 1
+    return DeliveryReport(sent, failed)

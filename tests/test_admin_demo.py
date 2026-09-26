@@ -91,6 +91,19 @@ class AdminDemoTests(unittest.TestCase):
             connection.close()
             self.assertIn("Запланировать", page)
 
+    def test_dashboard_shows_service_notification_queue(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "subscribers.sqlite3"
+            protector = IdentityProtector(Fernet.generate_key(), b"g" * 32)
+            seed_admin_demo(path, protector)
+            connection = connect_subscribers(path)
+            initialize_subscribers(connection)
+            page = render_dashboard(connection, protector, "csrf-token").decode("utf-8")
+            connection.close()
+            self.assertIn("Сервисные уведомления", page)
+            self.assertIn("Выполнить тестовую доставку", page)
+            self.assertIn("reminder_24h", page)
+
 
 if __name__ == "__main__":
     unittest.main()
