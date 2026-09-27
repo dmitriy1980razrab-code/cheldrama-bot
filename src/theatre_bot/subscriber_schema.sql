@@ -157,8 +157,11 @@ CREATE TABLE IF NOT EXISTS outgoing_reply_queue (
     channel TEXT NOT NULL CHECK (channel IN ('vk', 'max')),
     dedupe_hash TEXT NOT NULL UNIQUE,
     payload_encrypted BLOB NOT NULL,
+    source_type TEXT NOT NULL DEFAULT 'webhook'
+        CHECK (source_type IN ('webhook', 'service_notification', 'campaign')),
+    source_key TEXT,
     status TEXT NOT NULL DEFAULT 'pending'
-        CHECK (status IN ('pending', 'processing', 'sent', 'failed')),
+        CHECK (status IN ('pending', 'processing', 'sent', 'failed', 'cancelled')),
     attempt_count INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     last_attempt_at TEXT,

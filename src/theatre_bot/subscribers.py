@@ -128,6 +128,49 @@ def initialize_subscribers(connection: sqlite3.Connection) -> None:
             connection.execute(
                 f"ALTER TABLE notification_queue ADD COLUMN {column} {definition}"
             )
+    outgoing_sql_row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'outgoing_reply_queue'"
+    ).fetchone()
+    outgoing_sql = outgoing_sql_row["sql"] if outgoing_sql_row else ""
+    if outgoing_sql and "'cancelled'" not in outgoing_sql:
+        connection.execute("DROP INDEX IF EXISTS idx_outgoing_reply_queue_delivery")
+        connection.execute(
+            "ALTER TABLE outgoing_reply_queue RENAME TO outgoing_reply_queue_legacy"
+        )
+        connection.executescript(
+            """
+            CREATE TABLE outgoing_reply_queue (
+                id INTEGER PRIMARY KEY,
+                channel TEXT NOT NULL CHECK (channel IN ('vk', 'max')),
+                dedupe_hash TEXT NOT NULL UNIQUE,
+                payload_encrypted BLOB NOT NULL,
+                source_type TEXT NOT NULL DEFAULT 'webhook'
+                    CHECK (source_type IN ('webhook', 'service_notification', 'campaign')),
+                source_key TEXT,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending', 'processing', 'sent', 'failed', 'cancelled')),
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                last_attempt_at TEXT,
+                next_attempt_at TEXT,
+                locked_until TEXT,
+                sent_at TEXT,
+                failure_reason TEXT
+            );
+            INSERT INTO outgoing_reply_queue (
+                id, channel, dedupe_hash, payload_encrypted, status, attempt_count,
+                created_at, last_attempt_at, next_attempt_at, locked_until,
+                sent_at, failure_reason
+            )
+            SELECT id, channel, dedupe_hash, payload_encrypted, status, attempt_count,
+                created_at, last_attempt_at, next_attempt_at, locked_until,
+                sent_at, failure_reason
+            FROM outgoing_reply_queue_legacy;
+            DROP TABLE outgoing_reply_queue_legacy;
+            CREATE INDEX idx_outgoing_reply_queue_delivery
+                ON outgoing_reply_queue(status, next_attempt_at, locked_until, id);
+            """
+        )
     connection.commit()
 
 

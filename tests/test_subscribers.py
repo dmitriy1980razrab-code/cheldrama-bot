@@ -211,6 +211,45 @@ class SubscriberTests(unittest.TestCase):
                 else:
                     os.environ[name] = value
 
+    def test_previous_outgoing_queue_schema_is_upgraded_without_data_loss(self):
+        legacy_path = Path(self.tempdir.name) / "legacy.sqlite3"
+        legacy = connect_subscribers(legacy_path)
+        legacy.executescript(
+            """
+            CREATE TABLE outgoing_reply_queue (
+                id INTEGER PRIMARY KEY,
+                channel TEXT NOT NULL,
+                dedupe_hash TEXT NOT NULL UNIQUE,
+                payload_encrypted BLOB NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending', 'processing', 'sent', 'failed')),
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                last_attempt_at TEXT,
+                next_attempt_at TEXT,
+                locked_until TEXT,
+                sent_at TEXT,
+                failure_reason TEXT
+            );
+            INSERT INTO outgoing_reply_queue (
+                channel, dedupe_hash, payload_encrypted, created_at
+            ) VALUES ('max', 'legacy-hash', X'0102', '2026-09-27T12:00:00+00:00');
+            """
+        )
+        initialize_subscribers(legacy)
+        row = legacy.execute(
+            "SELECT dedupe_hash, source_type, status FROM outgoing_reply_queue"
+        ).fetchone()
+        schema = legacy.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'outgoing_reply_queue'"
+        ).fetchone()[0]
+        legacy.close()
+        self.assertEqual(
+            (row["dedupe_hash"], row["source_type"], row["status"]),
+            ("legacy-hash", "webhook", "pending"),
+        )
+        self.assertIn("'cancelled'", schema)
+
 
 if __name__ == "__main__":
     unittest.main()

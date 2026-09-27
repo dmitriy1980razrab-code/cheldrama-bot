@@ -20,12 +20,15 @@ from theatre_bot.subscribers import (
 class StoredReply:
     queue_id: int
     message: OutgoingMessage
+    source_type: str
+    source_key: str | None
 
 
 @dataclass(frozen=True)
 class PersistentDeliveryReport:
     sent: int
     failed: int
+    cancelled: int = 0
 
 
 class ReplySender(Protocol):
@@ -74,9 +77,13 @@ def enqueue_reply(
     message: OutgoingMessage,
     dedupe_key: str,
     at: datetime | None = None,
+    source_type: str = "webhook",
+    source_key: str | None = None,
 ) -> bool:
     if message.channel not in {"vk", "max"} or not dedupe_key:
         raise ValueError("valid channel and dedupe key are required")
+    if source_type not in {"webhook", "service_notification", "campaign"}:
+        raise ValueError("unknown reply source")
     dedupe_hash = protector.lookup_hash(
         message.channel, f"outgoing-reply:{dedupe_key}"
     )
@@ -85,10 +92,14 @@ def enqueue_reply(
         cursor = connection.execute(
             """
             INSERT OR IGNORE INTO outgoing_reply_queue (
-                channel, dedupe_hash, payload_encrypted, created_at
-            ) VALUES (?, ?, ?, ?)
+                channel, dedupe_hash, payload_encrypted,
+                source_type, source_key, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (message.channel, dedupe_hash, encrypted, _timestamp(at)),
+            (
+                message.channel, dedupe_hash, encrypted,
+                source_type, source_key, _timestamp(at),
+            ),
         )
     return cursor.rowcount == 1
 
@@ -110,7 +121,8 @@ def claim_replies(
     try:
         rows = connection.execute(
             """
-            SELECT id, payload_encrypted FROM outgoing_reply_queue
+            SELECT id, payload_encrypted, source_type, source_key
+            FROM outgoing_reply_queue
             WHERE attempt_count < ? AND (
                 (status IN ('pending', 'failed')
                  AND (next_attempt_at IS NULL OR next_attempt_at <= ?))
@@ -137,6 +149,8 @@ def claim_replies(
         StoredReply(
             row["id"],
             _deserialize(protector.decrypt(row["payload_encrypted"]).encode("utf-8")),
+            row["source_type"],
+            row["source_key"],
         )
         for row in rows
     )
@@ -201,7 +215,12 @@ def deliver_persistent_replies(
 ) -> PersistentDeliveryReport:
     sent = 0
     failed = 0
+    cancelled = 0
     for stored in claim_replies(connection, protector, limit=limit, now=now):
+        if not _source_allows_delivery(connection, stored):
+            _cancel_reply(connection, stored, at=now)
+            cancelled += 1
+            continue
         try:
             sender.send(stored.message)
         except Exception as error:
@@ -212,11 +231,112 @@ def deliver_persistent_replies(
                 failure_reason=type(error).__name__,
                 at=now,
             )
+            _mark_source_result(
+                connection,
+                stored,
+                False,
+                type(error).__name__,
+                at=now,
+            )
             failed += 1
         else:
             mark_reply_result(connection, stored.queue_id, True, at=now)
+            _mark_source_result(connection, stored, True, None, at=now)
             sent += 1
-    return PersistentDeliveryReport(sent, failed)
+    return PersistentDeliveryReport(sent, failed, cancelled)
+
+
+def _source_allows_delivery(
+    connection: sqlite3.Connection,
+    stored: StoredReply,
+) -> bool:
+    if stored.source_type != "service_notification":
+        return True
+    if not stored.source_key or not stored.source_key.isdigit():
+        return False
+    row = connection.execute(
+        """
+        SELECT q.id
+        FROM notification_queue q
+        JOIN subscribers s ON s.id = q.subscriber_id
+        JOIN subscriptions sub ON sub.id = q.subscription_id
+        WHERE q.id = ? AND q.status IN ('pending', 'failed')
+          AND s.status = 'active' AND sub.status = 'active'
+          AND s.external_id_encrypted IS NOT NULL
+          AND (
+              SELECT action FROM consent_events c
+              WHERE c.subscriber_id = s.id
+                AND c.consent_type = 'service_notifications'
+              ORDER BY c.id DESC LIMIT 1
+          ) = 'granted'
+        """,
+        (int(stored.source_key),),
+    ).fetchone()
+    return row is not None
+
+
+def _cancel_reply(
+    connection: sqlite3.Connection,
+    stored: StoredReply,
+    at: datetime | None = None,
+) -> None:
+    with connection:
+        connection.execute(
+            """
+            UPDATE outgoing_reply_queue
+            SET status = 'cancelled', locked_until = NULL,
+                failure_reason = 'source_not_allowed', last_attempt_at = ?
+            WHERE id = ? AND status = 'processing'
+            """,
+            (_timestamp(at), stored.queue_id),
+        )
+        if stored.source_type == "service_notification" and stored.source_key and stored.source_key.isdigit():
+            connection.execute(
+                """
+                UPDATE notification_queue
+                SET status = 'cancelled', failure_reason = 'subscription_inactive'
+                WHERE id = ? AND status IN ('pending', 'failed')
+                """,
+                (int(stored.source_key),),
+            )
+
+
+def _mark_source_result(
+    connection: sqlite3.Connection,
+    stored: StoredReply,
+    success: bool,
+    failure_reason: str | None,
+    at: datetime | None = None,
+) -> None:
+    if stored.source_type != "service_notification" or not stored.source_key:
+        return
+    if not stored.source_key.isdigit():
+        return
+    if success:
+        with connection:
+            connection.execute(
+                """
+                UPDATE notification_queue
+                SET status = 'sent', sent_at = ?, failure_reason = NULL
+                WHERE id = ? AND status IN ('pending', 'failed')
+                """,
+                (_timestamp(at), int(stored.source_key)),
+            )
+        return
+    outgoing = connection.execute(
+        "SELECT attempt_count FROM outgoing_reply_queue WHERE id = ?",
+        (stored.queue_id,),
+    ).fetchone()
+    if outgoing and outgoing["attempt_count"] >= 3:
+        with connection:
+            connection.execute(
+                """
+                UPDATE notification_queue
+                SET status = 'failed', failure_reason = ?
+                WHERE id = ? AND status IN ('pending', 'failed')
+                """,
+                ((failure_reason or "delivery_failed")[:120], int(stored.source_key)),
+            )
 
 
 class PersistentReplyExecutor:

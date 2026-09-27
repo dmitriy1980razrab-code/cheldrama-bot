@@ -24,6 +24,7 @@ class PersistentWorkerStatus:
     cycles: int
     sent: int
     failed: int
+    cancelled: int
     loop_errors: int
     last_cycle_at: str | None
 
@@ -34,6 +35,7 @@ class ReplyQueueStatus:
     processing: int
     failed: int
     sent: int
+    cancelled: int
 
 
 def reply_queue_status(database_path: Path) -> ReplyQueueStatus:
@@ -53,6 +55,7 @@ def reply_queue_status(database_path: Path) -> ReplyQueueStatus:
         counts.get("processing", 0),
         counts.get("failed", 0),
         counts.get("sent", 0),
+        counts.get("cancelled", 0),
     )
 
 
@@ -85,6 +88,7 @@ class PersistentDeliveryWorker:
         self._cycles = 0
         self._sent = 0
         self._failed = 0
+        self._cancelled = 0
         self._loop_errors = 0
         self._last_cycle_at: str | None = None
         if auto_start:
@@ -127,6 +131,7 @@ class PersistentDeliveryWorker:
             self._cycles += 1
             self._sent += report.sent
             self._failed += report.failed
+            self._cancelled += report.cancelled
             self._last_cycle_at = moment.astimezone(timezone.utc).isoformat(
                 timespec="seconds"
             )
@@ -170,6 +175,7 @@ class PersistentDeliveryWorker:
                 self._cycles,
                 self._sent,
                 self._failed,
+                self._cancelled,
                 self._loop_errors,
                 self._last_cycle_at,
             )
