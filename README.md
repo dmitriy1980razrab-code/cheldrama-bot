@@ -148,6 +148,10 @@ python scripts/demo_notifications.py
 python scripts/demo_channel_events.py
 ```
 
+Подготовлены серверные адреса `POST /webhooks/vk` и `POST /webhooks/max`.
+Без явно настроенного защищённого Webhook-контура они возвращают `404` и не принимают
+события. Реальные сообщения во внешние API пока не отправляются.
+
 Требования для будущего подключения сайта, VK и MAX находятся в
 `docs/INTEGRATION_CHECKLIST.md`.
 

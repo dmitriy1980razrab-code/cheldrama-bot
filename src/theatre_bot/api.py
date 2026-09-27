@@ -13,6 +13,7 @@ from theatre_bot.database import connect, initialize
 from theatre_bot.dialog import Reply, answer
 from theatre_bot.security import ConversationStore, RateLimiter, valid_session_id
 from theatre_bot.technical_log import create_technical_logger, record_error
+from theatre_bot.webhooks import WebhookRuntime
 
 
 MAX_BODY_BYTES = 16_384
@@ -31,6 +32,7 @@ def create_handler(
     conversations: ConversationStore | None = None,
     rate_limiter: RateLimiter | None = None,
     technical_logger: Logger | None = None,
+    webhook_runtime: WebhookRuntime | None = None,
 ):
     conversation_store = conversations or ConversationStore()
     limiter = rate_limiter or RateLimiter()
@@ -88,7 +90,39 @@ def create_handler(
             self._send_bytes(HTTPStatus.OK, body, content_type)
 
         def do_POST(self) -> None:
-            if urlparse(self.path).path != "/api/chat":
+            request_path = urlparse(self.path).path
+            if request_path in {"/webhooks/vk", "/webhooks/max"}:
+                if webhook_runtime is None:
+                    self._send_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
+                    return
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                except ValueError:
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid_content_length"})
+                    return
+                if length <= 0 or length > MAX_BODY_BYTES:
+                    self._send_json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "invalid_body_size"})
+                    return
+                body = self.rfile.read(length)
+                channel = request_path.rsplit("/", 1)[-1]
+                try:
+                    result = webhook_runtime.handle(
+                        channel, dict(self.headers.items()), body
+                    )
+                except Exception as error:
+                    record_error(logger, f"webhook.{channel}", error)
+                    self._send_json(
+                        HTTPStatus.INTERNAL_SERVER_ERROR,
+                        {"error": "internal_error"},
+                    )
+                    return
+                self._send_bytes(
+                    HTTPStatus(result.status),
+                    result.body,
+                    "text/plain; charset=utf-8",
+                )
+                return
+            if request_path != "/api/chat":
                 self._send_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
                 return
             try:
