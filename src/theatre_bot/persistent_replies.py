@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import sqlite3
-from typing import Protocol
+from typing import Callable, Protocol
 
 from theatre_bot.channels import OutgoingButton, OutgoingMessage
 from theatre_bot.dialog import Card, Reply
@@ -226,9 +226,11 @@ class PersistentReplyExecutor:
         self,
         database_path: Path,
         protector: IdentityProtector,
+        notify: Callable[[], None] | None = None,
     ) -> None:
         self._database_path = database_path
         self._protector = protector
+        self._notify = notify
 
     def submit(
         self, message: OutgoingMessage, dedupe_key: str | None = None
@@ -241,6 +243,8 @@ class PersistentReplyExecutor:
             enqueue_reply(
                 connection, self._protector, message, dedupe_key
             )
+            if self._notify is not None:
+                self._notify()
             # Повтор уже сохранён и также считается безопасно принятым.
             return True
         except sqlite3.Error:

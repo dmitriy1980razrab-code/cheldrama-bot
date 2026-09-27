@@ -191,6 +191,18 @@ python scripts/demo_persistent_replies.py
 платформе. ID получателя, текст, карточки и кнопки хранятся в зашифрованном виде.
 Повтор одного события не создаёт второй ответ.
 
+Демонстрация управляемого серверного цикла постоянной очереди:
+
+```bash
+python scripts/demo_persistent_worker.py
+```
+
+Агрегированное состояние рабочей очереди без расшифровки сообщений:
+
+```bash
+python scripts/show_reply_queue_status.py
+```
+
 Требования для будущего подключения сайта, VK и MAX находятся в
 `docs/INTEGRATION_CHECKLIST.md`.
 
