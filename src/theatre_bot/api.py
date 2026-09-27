@@ -196,13 +196,29 @@ def run_server(
     host: str = "127.0.0.1",
     port: int = 8080,
     log_path: Path | None = None,
+    subscriber_database_path: Path | None = None,
 ) -> None:
+    from theatre_bot.server_webhooks import build_webhook_runtime_from_environment
+
     technical_logger = create_technical_logger(
         log_path or database_path.parent / "technical.log"
     )
-    handler = create_handler(database_path, web_root, technical_logger=technical_logger)
+    webhook_runtime = build_webhook_runtime_from_environment(
+        database_path,
+        subscriber_database_path or database_path.parent / "subscribers.sqlite3",
+    )
+    handler = create_handler(
+        database_path,
+        web_root,
+        technical_logger=technical_logger,
+        webhook_runtime=webhook_runtime,
+    )
     server = ThreadingHTTPServer((host, port), handler)
     print(f"Виджет доступен: http://{host}:{port}")
+    print(
+        "Webhook VK/MAX: "
+        + ("включены настройками сервера" if webhook_runtime else "отключены")
+    )
     print("Для остановки нажмите Ctrl+C")
     try:
         server.serve_forever()

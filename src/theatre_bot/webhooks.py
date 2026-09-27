@@ -21,15 +21,21 @@ class WebhookRuntime:
 
     def __init__(
         self,
-        vk_adapter: VkWebhookAdapter,
-        max_adapter: MaxWebhookAdapter,
+        vk_adapter: VkWebhookAdapter | None,
+        max_adapter: MaxWebhookAdapter | None,
         processor: Callable[[IncomingMessage], OutgoingMessage | None],
-        vk_confirmation_code: str,
+        vk_confirmation_code: str | None = None,
         outgoing_limit: int = 1000,
     ) -> None:
-        if not vk_confirmation_code:
+        if vk_adapter is None and max_adapter is None:
+            raise ValueError("at least one webhook adapter is required")
+        if vk_adapter is not None and not vk_confirmation_code:
             raise ValueError("VK confirmation code is required")
-        self._adapters = {"vk": vk_adapter, "max": max_adapter}
+        self._adapters = {
+            name: adapter
+            for name, adapter in {"vk": vk_adapter, "max": max_adapter}.items()
+            if adapter is not None
+        }
         self._processor = processor
         self._vk_confirmation_code = vk_confirmation_code
         self._outgoing: deque[dict] = deque(maxlen=max(1, outgoing_limit))

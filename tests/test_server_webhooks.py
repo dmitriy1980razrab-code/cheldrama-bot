@@ -1,0 +1,163 @@
+from cryptography.fernet import Fernet
+from http.server import ThreadingHTTPServer
+import json
+from logging import Logger
+import os
+from pathlib import Path
+import sys
+import tempfile
+import threading
+import unittest
+from unittest.mock import patch
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
+
+sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
+
+from theatre_bot.api import create_handler
+from theatre_bot.database import connect, initialize
+from theatre_bot.server_webhooks import (
+    WebhookSettings,
+    build_webhook_runtime_from_environment,
+)
+
+
+class ServerWebhookTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.directory.name)
+        theatre = connect(self.root / "theatre.sqlite3")
+        initialize(theatre)
+        theatre.close()
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def _environment(self, **extra):
+        values = {
+            "THEATRE_SUBSCRIBER_ENCRYPTION_KEY": Fernet.generate_key().decode("ascii"),
+            "THEATRE_SUBSCRIBER_HASH_KEY": "server-webhook-hash-key-0123456789abcdef",
+        }
+        values.update(extra)
+        return values
+
+    def _post(self, server, path, payload, headers=None):
+        request = Request(
+            f"http://127.0.0.1:{server.server_port}{path}",
+            data=json.dumps(payload).encode("utf-8"),
+            headers=headers or {},
+            method="POST",
+        )
+        with urlopen(request, timeout=3) as response:
+            return response.status, response.read()
+
+    def test_empty_environment_disables_webhooks(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertIsNone(WebhookSettings.from_environment())
+
+    def test_incomplete_vk_settings_stop_startup(self):
+        with patch.dict(
+            os.environ,
+            {"THEATRE_VK_CALLBACK_SECRET": "secret"},
+            clear=True,
+        ):
+            with self.assertRaises(RuntimeError):
+                WebhookSettings.from_environment()
+
+    def test_max_can_be_enabled_independently(self):
+        environment = self._environment(THEATRE_MAX_WEBHOOK_SECRET="max-secret")
+        with patch.dict(os.environ, environment, clear=True):
+            runtime = build_webhook_runtime_from_environment(
+                self.root / "theatre.sqlite3",
+                self.root / "subscribers.sqlite3",
+            )
+        self.assertIsNotNone(runtime)
+
+    def test_channel_secret_can_be_loaded_from_server_file(self):
+        secret_file = self.root / "max-secret"
+        secret_file.write_text("max-from-file\n", encoding="utf-8")
+        environment = self._environment(
+            THEATRE_MAX_WEBHOOK_SECRET_FILE=str(secret_file)
+        )
+        with patch.dict(os.environ, environment, clear=True):
+            settings = WebhookSettings.from_environment()
+        self.assertEqual(settings.max_secret, "max-from-file")
+
+    def test_vk_can_be_enabled_independently(self):
+        environment = self._environment(
+            THEATRE_VK_CALLBACK_SECRET="vk-secret",
+            THEATRE_VK_GROUP_ID="42",
+            THEATRE_VK_CONFIRMATION_CODE="confirm-code",
+        )
+        with patch.dict(os.environ, environment, clear=True):
+            runtime = build_webhook_runtime_from_environment(
+                self.root / "theatre.sqlite3",
+                self.root / "subscribers.sqlite3",
+            )
+        result = runtime.handle(
+            "vk",
+            {},
+            json.dumps({
+                "type": "confirmation", "secret": "vk-secret", "group_id": 42
+            }).encode("utf-8"),
+        )
+        self.assertEqual((result.status, result.body), (200, b"confirm-code"))
+
+    def test_http_max_event_reaches_dialog_core(self):
+        environment = self._environment(THEATRE_MAX_WEBHOOK_SECRET="max-secret")
+        with patch.dict(os.environ, environment, clear=True):
+            runtime = build_webhook_runtime_from_environment(
+                self.root / "theatre.sqlite3",
+                self.root / "subscribers.sqlite3",
+            )
+        handler = create_handler(
+            self.root / "theatre.sqlite3",
+            self.root,
+            technical_logger=Logger("test.http.max"),
+            webhook_runtime=runtime,
+        )
+        server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            status, body = self._post(
+                server,
+                "/webhooks/max",
+                {
+                    "update_type": "message_created",
+                    "update_id": "max-http-1",
+                    "message": {"body": {"text": "Здравствуйте"}},
+                    "user": {"user_id": 17, "name": "Анна"},
+                },
+                {"X-Max-Bot-Api-Secret": "max-secret"},
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
+        self.assertEqual((status, body), (200, b"ok"))
+        outgoing = runtime.take_outgoing()
+        self.assertEqual(len(outgoing), 1)
+        self.assertEqual(outgoing[0]["chat_id"], "17")
+
+    def test_http_webhook_is_hidden_when_disabled(self):
+        handler = create_handler(
+            self.root / "theatre.sqlite3",
+            self.root,
+            technical_logger=Logger("test.http.disabled"),
+        )
+        server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with self.assertRaises(HTTPError) as raised:
+                self._post(server, "/webhooks/max", {"update_type": "message_created"})
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
+        self.assertEqual(raised.exception.code, 404)
+
+
+if __name__ == "__main__":
+    unittest.main()
