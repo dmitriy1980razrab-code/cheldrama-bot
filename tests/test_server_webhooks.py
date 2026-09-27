@@ -42,14 +42,20 @@ class ServerWebhookTests(unittest.TestCase):
         return values
 
     def _post(self, server, path, payload, headers=None):
-        request = Request(
-            f"http://127.0.0.1:{server.server_port}{path}",
-            data=json.dumps(payload).encode("utf-8"),
-            headers=headers or {},
-            method="POST",
-        )
-        with urlopen(request, timeout=3) as response:
-            return response.status, response.read()
+        for attempt in range(3):
+            request = Request(
+                f"http://127.0.0.1:{server.server_port}{path}",
+                data=json.dumps(payload).encode("utf-8"),
+                headers=headers or {},
+                method="POST",
+            )
+            try:
+                with urlopen(request, timeout=3) as response:
+                    return response.status, response.read()
+            except (ConnectionAbortedError, ConnectionResetError):
+                if attempt == 2:
+                    raise
+                threading.Event().wait(0.05)
 
     def test_empty_environment_disables_webhooks(self):
         with patch.dict(os.environ, {}, clear=True):

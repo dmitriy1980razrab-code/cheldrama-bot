@@ -250,6 +250,28 @@ def _source_allows_delivery(
     connection: sqlite3.Connection,
     stored: StoredReply,
 ) -> bool:
+    if stored.source_type == "campaign":
+        if not stored.source_key or not stored.source_key.isdigit():
+            return False
+        row = connection.execute(
+            """
+            SELECT cr.id
+            FROM campaign_recipients cr
+            JOIN campaigns c ON c.id = cr.campaign_id
+            JOIN subscribers s ON s.id = cr.subscriber_id
+            WHERE cr.id = ? AND cr.status = 'planned'
+              AND c.status = 'scheduled'
+              AND s.status = 'active' AND s.external_id_encrypted IS NOT NULL
+              AND (
+                  SELECT action FROM consent_events ce
+                  WHERE ce.subscriber_id = s.id
+                    AND ce.consent_type = 'marketing'
+                  ORDER BY ce.id DESC LIMIT 1
+              ) = 'granted'
+            """,
+            (int(stored.source_key),),
+        ).fetchone()
+        return row is not None
     if stored.source_type != "service_notification":
         return True
     if not stored.source_key or not stored.source_key.isdigit():
@@ -299,6 +321,17 @@ def _cancel_reply(
                 """,
                 (int(stored.source_key),),
             )
+        elif stored.source_type == "campaign" and stored.source_key and stored.source_key.isdigit():
+            connection.execute(
+                """
+                UPDATE campaign_recipients
+                SET status = 'skipped', reason = 'marketing_not_allowed'
+                WHERE id = ? AND status = 'planned'
+                """,
+                (int(stored.source_key),),
+            )
+    if stored.source_type == "campaign":
+        _finalize_campaign_for_recipient(connection, stored.source_key)
 
 
 def _mark_source_result(
@@ -308,6 +341,37 @@ def _mark_source_result(
     failure_reason: str | None,
     at: datetime | None = None,
 ) -> None:
+    if stored.source_type == "campaign":
+        if not stored.source_key or not stored.source_key.isdigit():
+            return
+        recipient_id = int(stored.source_key)
+        if success:
+            with connection:
+                connection.execute(
+                    """
+                    UPDATE campaign_recipients
+                    SET status = 'sent', reason = NULL, sent_at = ?
+                    WHERE id = ? AND status = 'planned'
+                    """,
+                    (_timestamp(at), recipient_id),
+                )
+        else:
+            outgoing = connection.execute(
+                "SELECT attempt_count FROM outgoing_reply_queue WHERE id = ?",
+                (stored.queue_id,),
+            ).fetchone()
+            if outgoing and outgoing["attempt_count"] >= 3:
+                with connection:
+                    connection.execute(
+                        """
+                        UPDATE campaign_recipients
+                        SET status = 'failed', reason = ?
+                        WHERE id = ? AND status = 'planned'
+                        """,
+                        ((failure_reason or "delivery_failed")[:120], recipient_id),
+                    )
+        _finalize_campaign_for_recipient(connection, stored.source_key)
+        return
     if stored.source_type != "service_notification" or not stored.source_key:
         return
     if not stored.source_key.isdigit():
@@ -336,6 +400,36 @@ def _mark_source_result(
                 WHERE id = ? AND status IN ('pending', 'failed')
                 """,
                 ((failure_reason or "delivery_failed")[:120], int(stored.source_key)),
+            )
+
+
+def _finalize_campaign_for_recipient(
+    connection: sqlite3.Connection,
+    source_key: str | None,
+) -> None:
+    if not source_key or not source_key.isdigit():
+        return
+    row = connection.execute(
+        "SELECT campaign_id FROM campaign_recipients WHERE id = ?",
+        (int(source_key),),
+    ).fetchone()
+    if row is None:
+        return
+    planned = connection.execute(
+        """
+        SELECT count(*) FROM campaign_recipients
+        WHERE campaign_id = ? AND status = 'planned'
+        """,
+        (row["campaign_id"],),
+    ).fetchone()[0]
+    if planned == 0:
+        with connection:
+            connection.execute(
+                """
+                UPDATE campaigns SET status = 'completed'
+                WHERE id = ? AND status = 'scheduled'
+                """,
+                (row["campaign_id"],),
             )
 
 
