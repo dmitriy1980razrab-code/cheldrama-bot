@@ -143,3 +143,11 @@ CREATE TABLE IF NOT EXISTS notification_queue (
 
 CREATE INDEX IF NOT EXISTS idx_notification_queue_status
     ON notification_queue(status, created_at);
+
+CREATE TABLE IF NOT EXISTS inbound_events (
+    id INTEGER PRIMARY KEY,
+    channel TEXT NOT NULL CHECK (channel IN ('vk', 'max')),
+    event_id TEXT NOT NULL,
+    received_at TEXT NOT NULL,
+    UNIQUE (channel, event_id)
+);

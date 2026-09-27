@@ -12,6 +12,8 @@ class IncomingMessage:
     external_user_id: str
     external_message_id: str
     text: str
+    display_name: str | None = None
+    action: str | None = None
 
 
 @dataclass(frozen=True)
@@ -32,4 +34,3 @@ class ChannelAdapter(Protocol):
 
     def render_reply(self, message: OutgoingMessage) -> dict:
         """Преобразовать единый ответ в формат конкретной платформы."""
-
