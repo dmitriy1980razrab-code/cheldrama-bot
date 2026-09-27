@@ -4,7 +4,7 @@ from collections import deque
 from dataclasses import dataclass
 import json
 import threading
-from typing import Callable
+from typing import Callable, Protocol
 
 from theatre_bot.channels import IncomingMessage, OutgoingMessage
 from theatre_bot.platform_adapters import MaxWebhookAdapter, VkWebhookAdapter
@@ -14,6 +14,11 @@ from theatre_bot.platform_adapters import MaxWebhookAdapter, VkWebhookAdapter
 class WebhookResult:
     status: int
     body: bytes
+
+
+class ReplyExecutor(Protocol):
+    def submit(self, message: OutgoingMessage) -> bool:
+        """Поставить ответ в ограниченную очередь фоновой доставки."""
 
 
 class WebhookRuntime:
@@ -26,6 +31,7 @@ class WebhookRuntime:
         processor: Callable[[IncomingMessage], OutgoingMessage | None],
         vk_confirmation_code: str | None = None,
         outgoing_limit: int = 1000,
+        reply_executor: ReplyExecutor | None = None,
     ) -> None:
         if vk_adapter is None and max_adapter is None:
             raise ValueError("at least one webhook adapter is required")
@@ -39,6 +45,7 @@ class WebhookRuntime:
         self._processor = processor
         self._vk_confirmation_code = vk_confirmation_code
         self._outgoing: deque[dict] = deque(maxlen=max(1, outgoing_limit))
+        self._reply_executor = reply_executor
         self._lock = threading.Lock()
 
     def handle(
@@ -65,7 +72,13 @@ class WebhookRuntime:
         with self._lock:
             outgoing = self._processor(message)
             if outgoing is not None:
-                self._outgoing.append(adapter.render_reply(outgoing))
+                queued = (
+                    self._reply_executor.submit(outgoing)
+                    if self._reply_executor is not None
+                    else False
+                )
+                if not queued:
+                    self._outgoing.append(adapter.render_reply(outgoing))
         return WebhookResult(200, b"ok")
 
     def take_outgoing(self) -> tuple[dict, ...]:
