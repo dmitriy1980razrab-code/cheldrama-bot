@@ -26,6 +26,7 @@ class Play:
     summary: str | None
     duration_minutes: int | None
     age_rating: str | None
+    source_url: str
 
 
 @dataclass(frozen=True)
@@ -68,7 +69,8 @@ def find_play_in_text(connection: sqlite3.Connection, text: str) -> Play | None:
     normalized_text = _normalize(text)
     rows = connection.execute(
         """
-        SELECT id, title, normalized_title, director, summary, duration_minutes, age_rating
+        SELECT id, title, normalized_title, director, summary, duration_minutes,
+               age_rating, source_url
         FROM plays WHERE is_active = 1
         ORDER BY length(normalized_title) DESC
         """
@@ -79,6 +81,7 @@ def find_play_in_text(connection: sqlite3.Connection, text: str) -> Play | None:
                 row["id"], row["title"], row["director"], row["summary"],
                 row["duration_minutes"],
                 row["age_rating"],
+                row["source_url"],
             )
     fuzzy_matches = [
         (_best_phrase_similarity(normalized_text, row["normalized_title"]), row)
@@ -90,6 +93,7 @@ def find_play_in_text(connection: sqlite3.Connection, text: str) -> Play | None:
             row["id"], row["title"], row["director"], row["summary"],
             row["duration_minutes"],
             row["age_rating"],
+            row["source_url"],
         )
     return None
 

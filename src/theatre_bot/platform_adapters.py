@@ -89,6 +89,7 @@ class VkWebhookAdapter:
             "peer_id": message.external_user_id,
             "message": message.reply.text,
             "cards": [card.__dict__ for card in message.reply.cards],
+            "buttons": [button.__dict__ for button in message.buttons],
         }
 
 
@@ -140,4 +141,5 @@ class MaxWebhookAdapter:
             "chat_id": message.external_user_id,
             "text": message.reply.text,
             "cards": [card.__dict__ for card in message.reply.cards],
+            "buttons": [button.__dict__ for button in message.buttons],
         }

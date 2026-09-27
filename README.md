@@ -142,6 +142,12 @@ python scripts/demo_subscription_flow.py
 python scripts/demo_notifications.py
 ```
 
+Сквозная демонстрация тестовых событий VK и сценария подписки:
+
+```bash
+python scripts/demo_channel_events.py
+```
+
 Требования для будущего подключения сайта, VK и MAX находятся в
 `docs/INTEGRATION_CHECKLIST.md`.
 

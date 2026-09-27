@@ -21,6 +21,13 @@ class OutgoingMessage:
     channel: str
     external_user_id: str
     reply: Reply
+    buttons: tuple["OutgoingButton", ...] = ()
+
+
+@dataclass(frozen=True)
+class OutgoingButton:
+    action: str
+    label: str
 
 
 class ChannelAdapter(Protocol):
