@@ -151,3 +151,22 @@ CREATE TABLE IF NOT EXISTS inbound_events (
     received_at TEXT NOT NULL,
     UNIQUE (channel, event_id)
 );
+
+CREATE TABLE IF NOT EXISTS outgoing_reply_queue (
+    id INTEGER PRIMARY KEY,
+    channel TEXT NOT NULL CHECK (channel IN ('vk', 'max')),
+    dedupe_hash TEXT NOT NULL UNIQUE,
+    payload_encrypted BLOB NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'processing', 'sent', 'failed')),
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    last_attempt_at TEXT,
+    next_attempt_at TEXT,
+    locked_until TEXT,
+    sent_at TEXT,
+    failure_reason TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_outgoing_reply_queue_delivery
+    ON outgoing_reply_queue(status, next_attempt_at, locked_until, id);

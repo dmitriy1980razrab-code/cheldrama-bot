@@ -8,6 +8,7 @@ from theatre_bot.channel_handler import ChannelMessageHandler, SubscriptionFlowS
 from theatre_bot.channels import IncomingMessage, OutgoingMessage
 from theatre_bot.database import connect, initialize
 from theatre_bot.platform_adapters import MaxWebhookAdapter, VkWebhookAdapter
+from theatre_bot.persistent_replies import PersistentReplyExecutor
 from theatre_bot.subscribers import (
     IdentityProtector,
     connect_subscribers,
@@ -112,4 +113,7 @@ def build_webhook_runtime_from_environment(
         max_adapter,
         processor,
         settings.vk_confirmation_code,
+        reply_executor=PersistentReplyExecutor(
+            subscriber_database_path, protector
+        ),
     )

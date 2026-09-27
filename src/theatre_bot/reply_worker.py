@@ -60,7 +60,9 @@ class BackgroundReplyWorker:
             )
             self._thread.start()
 
-    def submit(self, message: OutgoingMessage) -> bool:
+    def submit(
+        self, message: OutgoingMessage, dedupe_key: str | None = None
+    ) -> bool:
         with self._lock:
             if not self._accepting:
                 self._rejected += 1

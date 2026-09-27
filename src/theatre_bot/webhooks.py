@@ -17,7 +17,9 @@ class WebhookResult:
 
 
 class ReplyExecutor(Protocol):
-    def submit(self, message: OutgoingMessage) -> bool:
+    def submit(
+        self, message: OutgoingMessage, dedupe_key: str | None = None
+    ) -> bool:
         """Поставить ответ в ограниченную очередь фоновой доставки."""
 
 
@@ -73,7 +75,10 @@ class WebhookRuntime:
             outgoing = self._processor(message)
             if outgoing is not None:
                 queued = (
-                    self._reply_executor.submit(outgoing)
+                    self._reply_executor.submit(
+                        outgoing,
+                        dedupe_key=f"{message.channel}:{message.external_message_id}",
+                    )
                     if self._reply_executor is not None
                     else False
                 )

@@ -136,9 +136,17 @@ class ServerWebhookTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=3)
         self.assertEqual((status, body), (200, b"ok"))
-        outgoing = runtime.take_outgoing()
-        self.assertEqual(len(outgoing), 1)
-        self.assertEqual(outgoing[0]["chat_id"], "17")
+        subscribers = connect(self.root / "subscribers.sqlite3")
+        try:
+            queued = subscribers.execute(
+                "SELECT channel, status FROM outgoing_reply_queue"
+            ).fetchall()
+        finally:
+            subscribers.close()
+        self.assertEqual([(row["channel"], row["status"]) for row in queued], [
+            ("max", "pending")
+        ])
+        self.assertEqual(runtime.take_outgoing(), ())
 
     def test_http_webhook_is_hidden_when_disabled(self):
         handler = create_handler(
