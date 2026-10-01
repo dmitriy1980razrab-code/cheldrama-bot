@@ -1,9 +1,12 @@
 [Unit]
-Description=Create verified backup of Cheldrama bot database
-Requires=docker.service
-After=docker.service cheldrama-update.service
+Description=Cheldrama encrypted database backup to Object Storage
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=oneshot
-WorkingDirectory=/opt/cheldrama-bot
-ExecStart=/usr/bin/docker compose --profile jobs run --rm backup
+User=botadmin
+Group=botadmin
+Environment=HOME=/home/botadmin
+ExecStart=/usr/local/bin/cheldrama-backup-to-cloud
+UMask=0077

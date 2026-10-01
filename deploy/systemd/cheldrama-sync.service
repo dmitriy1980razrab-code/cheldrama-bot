@@ -1,0 +1,13 @@
+[Unit]
+Description=Update Cheldrama bot theatre data
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=botadmin
+Group=botadmin
+WorkingDirectory=/opt/cheldrama-bot
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/cheldrama-bot/.venv/bin/python /opt/cheldrama-bot/scripts/sync_all.py
+UMask=0077

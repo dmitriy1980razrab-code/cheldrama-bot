@@ -1,0 +1,14 @@
+{
+  "lifecycleRules": [
+    {
+      "id": "delete-backups-after-90-days",
+      "enabled": true,
+      "filter": {
+        "prefix": "database/"
+      },
+      "expiration": {
+        "days": "90"
+      }
+    }
+  ]
+}

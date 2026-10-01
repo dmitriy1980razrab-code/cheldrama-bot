@@ -1,8 +1,8 @@
 [Unit]
-Description=Daily Cheldrama database backup
+Description=Schedule Cheldrama bot data updates
 
 [Timer]
-OnCalendar=*-*-* 20:30:00 UTC
+OnCalendar=*-*-* 00,06,12,18:15:00 UTC
 Persistent=true
 RandomizedDelaySec=5m
 
