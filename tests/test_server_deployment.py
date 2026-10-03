@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 import unittest
 
@@ -24,3 +25,29 @@ class ServerDeploymentTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("--profile jobs run --rm updater", service)
         self.assertIn("Persistent=true", timer)
+
+    def test_native_server_services_are_versioned(self):
+        systemd = PROJECT_ROOT / "deploy" / "systemd"
+        bot_service = (systemd / "cheldrama-bot.service").read_text(encoding="utf-8")
+        sync_timer = (systemd / "cheldrama-sync.timer").read_text(encoding="utf-8")
+        backup_service = (systemd / "cheldrama-backup.service").read_text(encoding="utf-8")
+        backup_timer = (systemd / "cheldrama-backup.timer").read_text(encoding="utf-8")
+        self.assertIn("127.0.0.1", bot_service)
+        self.assertIn("scripts/run_web.py", bot_service)
+        self.assertIn("00,06,12,18:15:00 UTC", sync_timer)
+        self.assertIn("/usr/local/bin/cheldrama-backup-to-cloud", backup_service)
+        self.assertIn("20:30:00 UTC", backup_timer)
+
+    def test_object_storage_backup_has_retention_policy(self):
+        script = (
+            PROJECT_ROOT / "deploy" / "scripts" / "cheldrama-backup-to-cloud.sh"
+        ).read_text(encoding="utf-8")
+        lifecycle = json.loads(
+            (PROJECT_ROOT / "deploy" / "object-storage-lifecycle.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertIn("storage s3 cp", script)
+        self.assertIn("subscribers-*.sqlite3.gz", script)
+        self.assertIn('for BACKUP_NAME in "${BACKUP_NAMES[@]}"', script)
+        self.assertEqual(lifecycle["lifecycleRules"][0]["expiration"]["days"], "90")

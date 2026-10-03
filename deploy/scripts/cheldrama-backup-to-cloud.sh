@@ -7,21 +7,30 @@ PYTHON="$PROJECT/.venv/bin/python"
 YC="/home/botadmin/yandex-cloud/bin/yc"
 
 cd "$PROJECT"
-"$PYTHON" scripts/backup_database.py
+BACKUP_OUTPUT="$("$PYTHON" scripts/backup_database.py)"
+printf '%s\n' "$BACKUP_OUTPUT"
 
-BACKUP_FILE="$(
-  find "$PROJECT/backups" -maxdepth 1 -type f -name 'theatre-*.sqlite3.gz' \
-    -printf '%T@ %p\n' | sort -n | tail -1 | cut -d' ' -f2-
-)"
+mapfile -t BACKUP_NAMES < <(
+  printf '%s\n' "$BACKUP_OUTPUT" | sed -n 's/^Копия создана: //p'
+)
+test "${#BACKUP_NAMES[@]}" -gt 0
 
-test -n "$BACKUP_FILE"
-CHECKSUM_FILE="${BACKUP_FILE}.sha256"
-test -f "$CHECKSUM_FILE"
+for BACKUP_NAME in "${BACKUP_NAMES[@]}"; do
+  case "$BACKUP_NAME" in
+    theatre-*.sqlite3.gz|subscribers-*.sqlite3.gz) ;;
+    *) echo "Недопустимое имя резервной копии." >&2; exit 1 ;;
+  esac
 
-"$YC" storage s3 cp "$BACKUP_FILE" \
-  "s3://$BUCKET/database/$(basename "$BACKUP_FILE")"
+  BACKUP_FILE="$PROJECT/backups/$BACKUP_NAME"
+  CHECKSUM_FILE="${BACKUP_FILE}.sha256"
+  test -f "$BACKUP_FILE"
+  test -f "$CHECKSUM_FILE"
 
-"$YC" storage s3 cp "$CHECKSUM_FILE" \
-  "s3://$BUCKET/database/$(basename "$CHECKSUM_FILE")"
+  "$YC" storage s3 cp "$BACKUP_FILE" \
+    "s3://$BUCKET/database/$(basename "$BACKUP_FILE")"
+
+  "$YC" storage s3 cp "$CHECKSUM_FILE" \
+    "s3://$BUCKET/database/$(basename "$CHECKSUM_FILE")"
+done
 
 echo "Внешняя резервная копия успешно загружена."

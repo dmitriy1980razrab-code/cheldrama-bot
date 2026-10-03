@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 import sqlite3
+import subprocess
+from typing import Callable
 
 from theatre_bot.database import data_status
 
@@ -25,8 +27,15 @@ REQUIRED_FILES = (
     "scripts/backup_database.py",
     "deploy/systemd/cheldrama-backup.service",
     "deploy/systemd/cheldrama-backup.timer",
+    "deploy/systemd/cheldrama-bot.service",
+    "deploy/systemd/cheldrama-sync.service",
+    "deploy/systemd/cheldrama-sync.timer",
+    "deploy/scripts/cheldrama-backup-to-cloud.sh",
+    "deploy/object-storage-lifecycle.json",
     "docs/INTEGRATION_CHECKLIST.md",
 )
+
+SystemctlCheck = Callable[[str, str], bool]
 
 
 def _file_checks(project_root: Path) -> list[CheckResult]:
@@ -78,22 +87,93 @@ def _database_checks(database_path: Path, now: datetime | None) -> list[CheckRes
             connection.close()
 
 
+def _systemctl_check(action: str, unit: str) -> bool:
+    if not Path("/run/systemd/system").is_dir():
+        return False
+    try:
+        result = subprocess.run(
+            ("systemctl", action, "--quiet", unit),
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def _deployment_checks(
+    systemd_directory: Path,
+    systemctl_check: SystemctlCheck | None,
+) -> list[CheckResult]:
+    check = systemctl_check or _systemctl_check
+    runtime_available = systemctl_check is not None or Path("/run/systemd/system").is_dir()
+    installed = all(
+        (systemd_directory / unit).is_file()
+        for unit in (
+            "cheldrama-bot.service",
+            "cheldrama-sync.service",
+            "cheldrama-sync.timer",
+            "cheldrama-backup.service",
+            "cheldrama-backup.timer",
+        )
+    )
+    if not runtime_available or not installed:
+        return [
+            CheckResult("WAIT", "Внешний сервер", "проверяется на развёрнутом Linux-сервере"),
+            CheckResult(
+                "WAIT",
+                "Внешняя резервная копия",
+                "проверяется на развёрнутом Linux-сервере",
+            ),
+        ]
+
+    bot_ready = check("is-enabled", "cheldrama-bot.service") and check(
+        "is-active", "cheldrama-bot.service"
+    )
+    sync_ready = check("is-enabled", "cheldrama-sync.timer") and check(
+        "is-active", "cheldrama-sync.timer"
+    )
+    backup_ready = check("is-enabled", "cheldrama-backup.timer") and check(
+        "is-active", "cheldrama-backup.timer"
+    )
+
+    server_level = "OK" if bot_ready and sync_ready else "WARN"
+    server_details = (
+        "бот и автоматическое обновление активны"
+        if server_level == "OK"
+        else "проверьте cheldrama-bot.service и cheldrama-sync.timer"
+    )
+    backup_level = "OK" if backup_ready else "WARN"
+    backup_details = (
+        "ежедневный таймер активен; результат загрузки проверяется журналом"
+        if backup_level == "OK"
+        else "проверьте cheldrama-backup.timer и последнюю загрузку"
+    )
+    return [
+        CheckResult(server_level, "Внешний сервер", server_details),
+        CheckResult(backup_level, "Внешняя резервная копия", backup_details),
+    ]
+
+
 def readiness_report(
     project_root: str | Path,
     database_path: str | Path,
     now: datetime | None = None,
+    systemd_directory: str | Path = "/etc/systemd/system",
+    systemctl_check: SystemctlCheck | None = None,
 ) -> list[CheckResult]:
     root = Path(project_root)
     results = _file_checks(root)
     results.extend(_database_checks(Path(database_path), now))
+    results.extend(_deployment_checks(Path(systemd_directory), systemctl_check))
     results.extend(
         (
-            CheckResult("WAIT", "Внешний сервер", "не выбран и не оплачивается"),
-            CheckResult("WAIT", "HTTPS и домен", "подключаются при развёртывании"),
+            CheckResult("WAIT", "HTTPS и домен", "нужны домен и TLS-сертификат"),
             CheckResult("WAIT", "Сайт театра", "нужны согласование и доступ администратора"),
             CheckResult("WAIT", "VK", "нужны официальные доступы сообщества"),
             CheckResult("WAIT", "MAX", "нужны официальные параметры подключения"),
-            CheckResult("WAIT", "Внешняя резервная копия", "подключается после выбора сервера"),
         )
     )
     return results

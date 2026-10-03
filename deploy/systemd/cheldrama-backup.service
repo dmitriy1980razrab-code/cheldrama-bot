@@ -1,5 +1,5 @@
 [Unit]
-Description=Cheldrama encrypted database backup to Object Storage
+Description=Cheldrama protected database backup to Object Storage
 After=network-online.target
 Wants=network-online.target
 
