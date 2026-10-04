@@ -152,6 +152,8 @@ class DialogTests(unittest.TestCase):
     def test_help(self):
         reply = answer(self.connection, "Что ты умеешь?", datetime(2026, 9, 18, 12, 0))
         self.assertIn("жанре", reply.text)
+        self.assertIn("участвует конкретный артист", reply.text)
+        self.assertNotIn("Мартынов", reply.text)
 
     def test_template_can_be_edited_in_database(self):
         self.connection.execute(
