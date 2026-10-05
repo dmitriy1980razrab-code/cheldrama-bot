@@ -33,6 +33,7 @@ class ServerDeploymentTests(unittest.TestCase):
         backup_service = (systemd / "cheldrama-backup.service").read_text(encoding="utf-8")
         backup_timer = (systemd / "cheldrama-backup.timer").read_text(encoding="utf-8")
         self.assertIn("127.0.0.1", bot_service)
+        self.assertIn("EnvironmentFile=-/etc/cheldrama-bot/runtime.env", bot_service)
         self.assertIn("scripts/run_web.py", bot_service)
         self.assertIn("00,06,12,18:15:00 UTC", sync_timer)
         self.assertIn("/usr/local/bin/cheldrama-backup-to-cloud", backup_service)
@@ -44,6 +45,14 @@ class ServerDeploymentTests(unittest.TestCase):
         )
         self.assertIn("server_name vash-kapeldiner.ru www.vash-kapeldiner.ru;", content)
         self.assertIn("proxy_pass http://127.0.0.1:8080;", content)
+
+    def test_runtime_environment_template_contains_only_secret_paths(self):
+        content = (PROJECT_ROOT / "deploy" / "runtime.env.example").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("THEATRE_VK_ACCESS_TOKEN_FILE=/etc/cheldrama-bot/secrets/", content)
+        self.assertIn("THEATRE_VK_GROUP_ID=", content)
+        self.assertNotIn("THEATRE_VK_ACCESS_TOKEN=", content)
 
     def test_object_storage_backup_has_retention_policy(self):
         script = (

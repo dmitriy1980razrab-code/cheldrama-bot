@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 import sys
 import unittest
+from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
@@ -11,8 +12,10 @@ from theatre_bot.dialog import Reply
 from theatre_bot.outgoing_delivery import (
     ChannelReplySender,
     DeliveryError,
+    HttpRequest,
     MAX_MESSAGES_URL,
     MemoryHttpTransport,
+    UrlLibHttpTransport,
     MaxApiSender,
     VK_MESSAGES_SEND_URL,
     VkApiSender,
@@ -20,6 +23,29 @@ from theatre_bot.outgoing_delivery import (
 
 
 class OutgoingDeliveryTests(unittest.TestCase):
+    def test_real_transport_applies_timeout_and_response_limit(self):
+        class Response:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self, limit):
+                self.limit = limit
+                return b"ok"
+
+        response = Response()
+        with patch("theatre_bot.outgoing_delivery.urlopen", return_value=response) as send:
+            result = UrlLibHttpTransport(timeout=7, response_limit=32).send(
+                HttpRequest("POST", "https://example.test", {"X-Test": "1"}, b"body")
+            )
+        self.assertEqual((result.status, result.body), (200, b"ok"))
+        self.assertEqual(response.limit, 32)
+        self.assertEqual(send.call_args.kwargs["timeout"], 7)
+
     def test_vk_request_uses_official_method_and_required_fields(self):
         transport = MemoryHttpTransport()
         sender = VkApiSender("fake-vk-token", transport, random_id=lambda: 123)
@@ -81,6 +107,18 @@ class OutgoingDeliveryTests(unittest.TestCase):
         self.assertEqual((raised.exception.channel, raised.exception.status), ("max", 503))
         self.assertNotIn("fake-secret-token", str(raised.exception))
         self.assertNotIn("Персональные данные", str(raised.exception))
+
+    def test_vk_api_error_inside_http_200_is_not_marked_as_sent(self):
+        transport = MemoryHttpTransport(
+            200,
+            b'{"error":{"error_code":5,"error_msg":"token value"}}',
+        )
+        sender = VkApiSender("fake-secret-token", transport)
+        with self.assertRaises(DeliveryError) as raised:
+            sender.send(OutgoingMessage("vk", "17", Reply("Персональные данные")))
+        self.assertEqual((raised.exception.channel, raised.exception.status), ("vk", 502))
+        self.assertNotIn("fake-secret-token", str(raised.exception))
+        self.assertNotIn("token value", str(raised.exception))
 
     def test_channel_sender_routes_vk_and_max_separately(self):
         vk_transport = MemoryHttpTransport()

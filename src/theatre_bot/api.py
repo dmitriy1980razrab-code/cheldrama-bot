@@ -198,15 +198,16 @@ def run_server(
     log_path: Path | None = None,
     subscriber_database_path: Path | None = None,
 ) -> None:
-    from theatre_bot.server_webhooks import build_webhook_runtime_from_environment
+    from theatre_bot.server_webhooks import build_webhook_services_from_environment
 
     technical_logger = create_technical_logger(
         log_path or database_path.parent / "technical.log"
     )
-    webhook_runtime = build_webhook_runtime_from_environment(
+    webhook_services = build_webhook_services_from_environment(
         database_path,
         subscriber_database_path or database_path.parent / "subscribers.sqlite3",
     )
+    webhook_runtime = webhook_services.runtime if webhook_services else None
     handler = create_handler(
         database_path,
         web_root,
@@ -226,3 +227,5 @@ def run_server(
         pass
     finally:
         server.server_close()
+        if webhook_services is not None:
+            webhook_services.close()

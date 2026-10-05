@@ -70,9 +70,15 @@ sudo cp deploy/systemd/cheldrama-sync.service /etc/systemd/system/
 sudo cp deploy/systemd/cheldrama-sync.timer /etc/systemd/system/
 sudo cp deploy/systemd/cheldrama-backup.service /etc/systemd/system/
 sudo cp deploy/systemd/cheldrama-backup.timer /etc/systemd/system/
+sudo cp deploy/runtime.env.example /etc/cheldrama-bot/runtime.env
 sudo systemctl daemon-reload
 sudo systemctl enable --now cheldrama-bot.service cheldrama-sync.timer cheldrama-backup.timer
 ```
+
+Перед включением внешнего канала заполните несекретный ID в `runtime.env`, а реальные
+ключи и токены сохраните отдельными файлами в `/etc/cheldrama-bot/secrets`. Файлы
+секретов читает только пользователь `botadmin`; их содержимое не вводится в команды,
+журнал systemd, GitHub или архив проекта.
 
 Проверка:
 

@@ -3,11 +3,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 from pathlib import Path
+from typing import Callable
 
 from theatre_bot.channel_handler import ChannelMessageHandler, SubscriptionFlowStore
 from theatre_bot.channels import IncomingMessage, OutgoingMessage
 from theatre_bot.database import connect, initialize
 from theatre_bot.platform_adapters import MaxWebhookAdapter, VkWebhookAdapter
+from theatre_bot.outgoing_delivery import (
+    ChannelReplySender,
+    HttpTransport,
+    MaxApiSender,
+    UrlLibHttpTransport,
+    VkApiSender,
+)
+from theatre_bot.persistent_delivery_worker import PersistentDeliveryWorker
 from theatre_bot.persistent_replies import PersistentReplyExecutor
 from theatre_bot.subscribers import (
     IdentityProtector,
@@ -22,7 +31,9 @@ class WebhookSettings:
     vk_secret: str | None
     vk_group_id: str | None
     vk_confirmation_code: str | None
+    vk_access_token: str | None
     max_secret: str | None
+    max_access_token: str | None
 
     @classmethod
     def from_environment(cls) -> "WebhookSettings | None":
@@ -30,18 +41,33 @@ class WebhookSettings:
             _secret_value("THEATRE_VK_CALLBACK_SECRET"),
             _value("THEATRE_VK_GROUP_ID"),
             _secret_value("THEATRE_VK_CONFIRMATION_CODE"),
+            _secret_value("THEATRE_VK_ACCESS_TOKEN"),
             _secret_value("THEATRE_MAX_WEBHOOK_SECRET"),
+            _secret_value("THEATRE_MAX_ACCESS_TOKEN"),
         )
         vk_values = (
             values.vk_secret,
             values.vk_group_id,
             values.vk_confirmation_code,
+            values.vk_access_token,
         )
-        if not any(vk_values) and not values.max_secret:
+        max_values = (values.max_secret, values.max_access_token)
+        if not any(vk_values) and not any(max_values):
             return None
         if any(vk_values) and not all(vk_values):
             raise RuntimeError("VK webhook settings are incomplete")
+        if any(max_values) and not all(max_values):
+            raise RuntimeError("MAX webhook settings are incomplete")
         return values
+
+
+@dataclass
+class ServerWebhookServices:
+    runtime: WebhookRuntime
+    worker: PersistentDeliveryWorker
+
+    def close(self) -> bool:
+        return self.worker.close()
 
 
 def _value(name: str) -> str | None:
@@ -89,10 +115,11 @@ class ServerChannelProcessor:
             subscribers.close()
 
 
-def build_webhook_runtime_from_environment(
+def build_webhook_services_from_environment(
     theatre_database_path: Path,
     subscriber_database_path: Path,
-) -> WebhookRuntime | None:
+    transport_factory: Callable[[], HttpTransport] = UrlLibHttpTransport,
+) -> ServerWebhookServices | None:
     settings = WebhookSettings.from_environment()
     if settings is None:
         return None
@@ -108,12 +135,31 @@ def build_webhook_runtime_from_environment(
         else None
     )
     max_adapter = MaxWebhookAdapter(settings.max_secret) if settings.max_secret else None
-    return WebhookRuntime(
+    transport = transport_factory()
+    sender = ChannelReplySender(
+        vk_sender=(
+            VkApiSender(settings.vk_access_token, transport)
+            if settings.vk_access_token
+            else None
+        ),
+        max_sender=(
+            MaxApiSender(settings.max_access_token, transport)
+            if settings.max_access_token
+            else None
+        ),
+    )
+    worker = PersistentDeliveryWorker(
+        subscriber_database_path,
+        protector,
+        sender,
+    )
+    runtime = WebhookRuntime(
         vk_adapter,
         max_adapter,
         processor,
         settings.vk_confirmation_code,
         reply_executor=PersistentReplyExecutor(
-            subscriber_database_path, protector
+            subscriber_database_path, protector, notify=worker.wake
         ),
     )
+    return ServerWebhookServices(runtime, worker)

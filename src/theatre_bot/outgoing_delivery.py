@@ -4,7 +4,9 @@ from dataclasses import dataclass
 import json
 import secrets
 from typing import Callable, Protocol
+from urllib.error import HTTPError
 from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 from theatre_bot.channels import OutgoingMessage
 
@@ -35,13 +37,42 @@ class HttpTransport(Protocol):
 class MemoryHttpTransport:
     """Тестовый транспорт: сохраняет запросы и никогда не обращается в сеть."""
 
-    def __init__(self, response_status: int = 200) -> None:
+    def __init__(self, response_status: int = 200, response_body: bytes = b"{}") -> None:
         self.response_status = response_status
+        self.response_body = response_body
         self.requests: list[HttpRequest] = []
 
     def send(self, request: HttpRequest) -> HttpResponse:
         self.requests.append(request)
-        return HttpResponse(self.response_status, b"{}")
+        return HttpResponse(self.response_status, self.response_body)
+
+
+class UrlLibHttpTransport:
+    """Ограниченный HTTPS-транспорт для штатной доставки сообщений."""
+
+    def __init__(self, timeout: float = 15.0, response_limit: int = 65536) -> None:
+        if timeout <= 0 or timeout > 120:
+            raise ValueError("timeout must be between 0 and 120 seconds")
+        if response_limit < 1 or response_limit > 1_048_576:
+            raise ValueError("response limit must be between 1 and 1048576 bytes")
+        self._timeout = timeout
+        self._response_limit = response_limit
+
+    def send(self, request: HttpRequest) -> HttpResponse:
+        prepared = Request(
+            request.url,
+            data=request.body,
+            headers=request.headers,
+            method=request.method,
+        )
+        try:
+            with urlopen(prepared, timeout=self._timeout) as response:
+                return HttpResponse(
+                    response.status,
+                    response.read(self._response_limit),
+                )
+        except HTTPError as error:
+            return HttpResponse(error.code, error.read(self._response_limit))
 
 
 class DeliveryError(RuntimeError):
@@ -54,6 +85,12 @@ class DeliveryError(RuntimeError):
 def _require_success(channel: str, response: HttpResponse) -> None:
     if not 200 <= response.status < 300:
         raise DeliveryError(channel, response.status)
+    try:
+        payload = json.loads(response.body) if response.body else {}
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise DeliveryError(channel, 502)
+    if isinstance(payload, dict) and payload.get("error"):
+        raise DeliveryError(channel, 502)
 
 
 def _vk_keyboard(message: OutgoingMessage) -> str | None:

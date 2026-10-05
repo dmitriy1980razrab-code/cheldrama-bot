@@ -34,6 +34,7 @@ REQUIRED_FILES = (
     "deploy/scripts/cheldrama-backup-to-cloud.sh",
     "deploy/object-storage-lifecycle.json",
     "deploy/nginx/cheldrama-bot.conf",
+    "deploy/runtime.env.example",
     "docs/INTEGRATION_CHECKLIST.md",
 )
 

@@ -18,8 +18,9 @@ from theatre_bot.api import create_handler
 from theatre_bot.database import connect, initialize
 from theatre_bot.server_webhooks import (
     WebhookSettings,
-    build_webhook_runtime_from_environment,
+    build_webhook_services_from_environment,
 )
+from theatre_bot.outgoing_delivery import MemoryHttpTransport
 
 
 class ServerWebhookTests(unittest.TestCase):
@@ -71,56 +72,80 @@ class ServerWebhookTests(unittest.TestCase):
                 WebhookSettings.from_environment()
 
     def test_max_can_be_enabled_independently(self):
-        environment = self._environment(THEATRE_MAX_WEBHOOK_SECRET="max-secret")
+        environment = self._environment(
+            THEATRE_MAX_WEBHOOK_SECRET="max-secret",
+            THEATRE_MAX_ACCESS_TOKEN="max-token",
+        )
         with patch.dict(os.environ, environment, clear=True):
-            runtime = build_webhook_runtime_from_environment(
+            services = build_webhook_services_from_environment(
                 self.root / "theatre.sqlite3",
                 self.root / "subscribers.sqlite3",
+                transport_factory=MemoryHttpTransport,
             )
-        self.assertIsNotNone(runtime)
+        self.assertIsNotNone(services)
+        self.assertTrue(services.close())
 
     def test_channel_secret_can_be_loaded_from_server_file(self):
         secret_file = self.root / "max-secret"
         secret_file.write_text("max-from-file\n", encoding="utf-8")
         environment = self._environment(
-            THEATRE_MAX_WEBHOOK_SECRET_FILE=str(secret_file)
+            THEATRE_MAX_WEBHOOK_SECRET_FILE=str(secret_file),
+            THEATRE_MAX_ACCESS_TOKEN="max-token",
         )
         with patch.dict(os.environ, environment, clear=True):
             settings = WebhookSettings.from_environment()
         self.assertEqual(settings.max_secret, "max-from-file")
 
-    def test_vk_can_be_enabled_independently(self):
+    def test_vk_delivery_token_is_required_with_webhook(self):
         environment = self._environment(
             THEATRE_VK_CALLBACK_SECRET="vk-secret",
             THEATRE_VK_GROUP_ID="42",
             THEATRE_VK_CONFIRMATION_CODE="confirm-code",
         )
         with patch.dict(os.environ, environment, clear=True):
-            runtime = build_webhook_runtime_from_environment(
+            with self.assertRaises(RuntimeError):
+                WebhookSettings.from_environment()
+
+    def test_vk_can_be_enabled_independently(self):
+        environment = self._environment(
+            THEATRE_VK_CALLBACK_SECRET="vk-secret",
+            THEATRE_VK_GROUP_ID="42",
+            THEATRE_VK_CONFIRMATION_CODE="confirm-code",
+            THEATRE_VK_ACCESS_TOKEN="vk-token",
+        )
+        with patch.dict(os.environ, environment, clear=True):
+            services = build_webhook_services_from_environment(
                 self.root / "theatre.sqlite3",
                 self.root / "subscribers.sqlite3",
+                transport_factory=MemoryHttpTransport,
             )
-        result = runtime.handle(
+        result = services.runtime.handle(
             "vk",
             {},
             json.dumps({
                 "type": "confirmation", "secret": "vk-secret", "group_id": 42
             }).encode("utf-8"),
         )
+        services.close()
         self.assertEqual((result.status, result.body), (200, b"confirm-code"))
 
     def test_http_max_event_reaches_dialog_core(self):
-        environment = self._environment(THEATRE_MAX_WEBHOOK_SECRET="max-secret")
+        transport = MemoryHttpTransport()
+        environment = self._environment(
+            THEATRE_MAX_WEBHOOK_SECRET="max-secret",
+            THEATRE_MAX_ACCESS_TOKEN="max-token",
+        )
         with patch.dict(os.environ, environment, clear=True):
-            runtime = build_webhook_runtime_from_environment(
+            services = build_webhook_services_from_environment(
                 self.root / "theatre.sqlite3",
                 self.root / "subscribers.sqlite3",
+                transport_factory=lambda: transport,
             )
         handler = create_handler(
             self.root / "theatre.sqlite3",
             self.root,
             technical_logger=Logger("test.http.max"),
-            webhook_runtime=runtime,
+            webhook_runtime=services.runtime,
         )
         server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -141,6 +166,8 @@ class ServerWebhookTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join(timeout=3)
+        self.assertTrue(services.worker.wait_until_idle())
+        self.assertTrue(services.close())
         self.assertEqual((status, body), (200, b"ok"))
         subscribers = connect(self.root / "subscribers.sqlite3")
         try:
@@ -150,9 +177,10 @@ class ServerWebhookTests(unittest.TestCase):
         finally:
             subscribers.close()
         self.assertEqual([(row["channel"], row["status"]) for row in queued], [
-            ("max", "pending")
+            ("max", "sent")
         ])
-        self.assertEqual(runtime.take_outgoing(), ())
+        self.assertEqual(len(transport.requests), 1)
+        self.assertEqual(services.runtime.take_outgoing(), ())
 
     def test_http_webhook_is_hidden_when_disabled(self):
         handler = create_handler(
