@@ -201,8 +201,6 @@ def fetch_full_affiche(pause_seconds: float = 0.3, progress=None) -> list[Affich
     main_html = fetch_affiche_html()
     urls = discover_affiche_month_urls(main_html)
     all_items = parse_affiche(main_html)
-    current_path = f"/affiche/{date.today().year}/{date.today().month:02d}/"
-    urls = [url for url in urls if current_path not in url]
     for number, url in enumerate(urls, start=1):
         if progress:
             progress(number, len(urls), url)

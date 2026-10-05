@@ -2,10 +2,17 @@ from datetime import date
 from pathlib import Path
 import sys
 import unittest
+from datetime import date
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
-from theatre_bot.site_affiche import discover_affiche_month_urls, parse_affiche
+from theatre_bot.site_affiche import (
+    BASE_URL,
+    discover_affiche_month_urls,
+    fetch_full_affiche,
+    parse_affiche,
+)
 
 
 HTML = """
@@ -49,6 +56,19 @@ class AfficheParserTests(unittest.TestCase):
                 "https://www.cheldrama.ru/affiche/2026/09/",
                 "https://www.cheldrama.ru/affiche/2026/10/",
             ],
+        )
+
+    def test_full_affiche_fetches_current_month_page(self):
+        current_path = f"/affiche/{date.today().year}/{date.today().month:02d}/"
+        main_html = f'<a href="{current_path}">Текущий месяц</a>'
+        with patch(
+            "theatre_bot.site_affiche.fetch_affiche_html",
+            side_effect=(main_html, ""),
+        ) as fetch:
+            self.assertEqual(fetch_full_affiche(pause_seconds=0), [])
+        self.assertEqual(
+            fetch.call_args_list[1].args,
+            (f"{BASE_URL}{current_path}",),
         )
 
 
