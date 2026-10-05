@@ -10,13 +10,42 @@
 - приложение: `/opt/cheldrama-bot`;
 - HTTP-сервер: `127.0.0.1:8080`, наружу публикуется только через Nginx;
 - публичный статический IPv4: `84.201.153.110`;
+- тестовый домен: `vash-kapeldiner.ru` и `www.vash-kapeldiner.ru`;
+- HTTPS: сертификат Let's Encrypt, автоматическое продление Certbot;
 - служба бота: `cheldrama-bot.service`;
 - обновление данных: `cheldrama-sync.timer`, четыре запуска в сутки;
 - резервное копирование: `cheldrama-backup.timer`, один запуск в сутки;
 - внешнее хранилище: закрытый Yandex Object Storage.
 
-Рабочий HTTPS и домен пока не подключены. Официальные Webhook VK/MAX остаются
-выключенными до получения доступов театра.
+Тестовый HTTPS-контур работает. Официальные Webhook VK/MAX остаются выключенными до
+получения доступов театра.
+
+## Домен, Nginx и HTTPS
+
+DNS-записи `A` для основного домена и `www` указывают на статический IPv4 ВМ.
+Приложение не публикуется напрямую: Nginx пересылает запросы на `127.0.0.1:8080`.
+Исходная HTTP-конфигурация для восстановления хранится в
+`deploy/nginx/cheldrama-bot.conf`.
+
+При восстановлении нового сервера сначала устанавливается HTTP-конфигурация:
+
+```bash
+sudo cp deploy/nginx/cheldrama-bot.conf /etc/nginx/sites-available/cheldrama-bot
+sudo ln -s /etc/nginx/sites-available/cheldrama-bot /etc/nginx/sites-enabled/cheldrama-bot
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+После обновления DNS Certbot выпускает и устанавливает сертификат:
+
+```bash
+sudo certbot --nginx -d vash-kapeldiner.ru -d www.vash-kapeldiner.ru
+sudo certbot renew --dry-run
+```
+
+Секретный ключ сертификата находится только в `/etc/letsencrypt` на сервере и не
+копируется в GitHub или архив проекта. При переходе на официальный домен меняются
+DNS, `server_name` и сертификат; приложение и базы данных переносить не требуется.
 
 ## Где хранятся данные
 

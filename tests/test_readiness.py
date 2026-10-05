@@ -59,3 +59,43 @@ class ReadinessTests(unittest.TestCase):
             by_name = {item.name: item for item in results}
             self.assertEqual(by_name["Внешний сервер"].level, "OK")
             self.assertEqual(by_name["Внешняя резервная копия"].level, "OK")
+
+    def test_active_nginx_tls_configuration_is_reported_as_ready(self):
+        with tempfile.TemporaryDirectory() as directory:
+            nginx_directory = Path(directory) / "sites-enabled"
+            nginx_directory.mkdir()
+            (nginx_directory / "cheldrama-bot").write_text(
+                """
+                server {
+                    listen 443 ssl;
+                    server_name vash-kapeldiner.ru www.vash-kapeldiner.ru;
+                    ssl_certificate /etc/letsencrypt/live/vash-kapeldiner.ru/fullchain.pem;
+                    ssl_certificate_key /etc/letsencrypt/live/vash-kapeldiner.ru/privkey.pem;
+                }
+                """,
+                encoding="utf-8",
+            )
+
+            results = readiness_report(
+                Path(__file__).parents[1],
+                Path(__file__).parents[1] / "data" / "missing.sqlite3",
+                nginx_directory=nginx_directory,
+            )
+            result = next(item for item in results if item.name == "HTTPS и домен")
+            self.assertEqual(result.level, "OK")
+            self.assertIn("vash-kapeldiner.ru", result.details)
+
+    def test_nginx_without_tls_is_still_waiting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            nginx_directory = Path(directory)
+            (nginx_directory / "cheldrama-bot").write_text(
+                "server { listen 80; server_name vash-kapeldiner.ru; }",
+                encoding="utf-8",
+            )
+            results = readiness_report(
+                Path(__file__).parents[1],
+                Path(__file__).parents[1] / "data" / "missing.sqlite3",
+                nginx_directory=nginx_directory,
+            )
+            result = next(item for item in results if item.name == "HTTPS и домен")
+            self.assertEqual(result.level, "WAIT")

@@ -38,6 +38,13 @@ class ServerDeploymentTests(unittest.TestCase):
         self.assertIn("/usr/local/bin/cheldrama-backup-to-cloud", backup_service)
         self.assertIn("20:30:00 UTC", backup_timer)
 
+    def test_nginx_template_uses_public_domain_and_private_application_port(self):
+        content = (PROJECT_ROOT / "deploy" / "nginx" / "cheldrama-bot.conf").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("server_name vash-kapeldiner.ru www.vash-kapeldiner.ru;", content)
+        self.assertIn("proxy_pass http://127.0.0.1:8080;", content)
+
     def test_object_storage_backup_has_retention_policy(self):
         script = (
             PROJECT_ROOT / "deploy" / "scripts" / "cheldrama-backup-to-cloud.sh"

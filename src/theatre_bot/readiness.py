@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+import re
 import sqlite3
 import subprocess
 from typing import Callable
@@ -32,6 +33,7 @@ REQUIRED_FILES = (
     "deploy/systemd/cheldrama-sync.timer",
     "deploy/scripts/cheldrama-backup-to-cloud.sh",
     "deploy/object-storage-lifecycle.json",
+    "deploy/nginx/cheldrama-bot.conf",
     "docs/INTEGRATION_CHECKLIST.md",
 )
 
@@ -157,20 +159,61 @@ def _deployment_checks(
     ]
 
 
+def _https_check(nginx_directory: Path) -> CheckResult:
+    if not nginx_directory.is_dir():
+        return CheckResult(
+            "WAIT",
+            "HTTPS и домен",
+            "проверяется на развёрнутом сервере с Nginx",
+        )
+
+    configurations: list[str] = []
+    try:
+        candidates = tuple(nginx_directory.iterdir())
+    except OSError:
+        candidates = ()
+    for path in candidates:
+        try:
+            configurations.append(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError):
+            continue
+
+    content = "\n".join(configurations)
+    has_tls_listener = bool(
+        re.search(r"^\s*listen\s+(?:\[::\]:)?443(?:\s+ssl)?\s*;", content, re.MULTILINE)
+    )
+    has_certificate = "ssl_certificate " in content and "ssl_certificate_key " in content
+    if not (has_tls_listener and has_certificate):
+        return CheckResult(
+            "WAIT",
+            "HTTPS и домен",
+            "нужны домен и TLS-сертификат",
+        )
+
+    names: set[str] = set()
+    for value in re.findall(r"^\s*server_name\s+([^;]+);", content, re.MULTILINE):
+        names.update(name for name in value.split() if name != "_")
+    details = "TLS настроен в активной конфигурации Nginx"
+    if names:
+        details += "; домены: " + ", ".join(sorted(names))
+    return CheckResult("OK", "HTTPS и домен", details)
+
+
 def readiness_report(
     project_root: str | Path,
     database_path: str | Path,
     now: datetime | None = None,
     systemd_directory: str | Path = "/etc/systemd/system",
+    nginx_directory: str | Path = "/etc/nginx/sites-enabled",
     systemctl_check: SystemctlCheck | None = None,
 ) -> list[CheckResult]:
     root = Path(project_root)
     results = _file_checks(root)
     results.extend(_database_checks(Path(database_path), now))
     results.extend(_deployment_checks(Path(systemd_directory), systemctl_check))
+    results.append(_https_check(Path(nginx_directory)))
     results.extend(
         (
-            CheckResult("WAIT", "HTTPS и домен", "нужны домен и TLS-сертификат"),
             CheckResult("WAIT", "Сайт театра", "нужны согласование и доступ администратора"),
             CheckResult("WAIT", "VK", "нужны официальные доступы сообщества"),
             CheckResult("WAIT", "MAX", "нужны официальные параметры подключения"),
