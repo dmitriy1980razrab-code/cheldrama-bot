@@ -8,7 +8,7 @@ from urllib.parse import parse_qs, urlparse
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 from theatre_bot.channels import OutgoingButton, OutgoingMessage
-from theatre_bot.dialog import Reply
+from theatre_bot.dialog import Card, Reply
 from theatre_bot.outgoing_delivery import (
     ChannelReplySender,
     DeliveryError,
@@ -70,6 +70,23 @@ class OutgoingDeliveryTests(unittest.TestCase):
         self.assertEqual(action["label"], "Подписаться")
         self.assertEqual(json.loads(action["payload"]), {"action": "subscribe"})
 
+    def test_vk_renders_reply_cards_as_readable_text(self):
+        transport = MemoryHttpTransport()
+        sender = VkApiSender("fake-vk-token", transport, random_id=lambda: 1)
+        card = Card(
+            "Король Лир",
+            "09.10.2026 в 18:30",
+            "Драма · 16+ · Большая сцена",
+            "https://www.cheldrama.ru/plays/king-lear/",
+            "42",
+        )
+        sender.send(OutgoingMessage("vk", "17", Reply("Спектакли 09.10.2026:", (card,))))
+        fields = parse_qs(transport.requests[0].body.decode("utf-8"))
+        text = fields["message"][0]
+        self.assertIn("🎭 Король Лир", text)
+        self.assertIn("09.10.2026 в 18:30", text)
+        self.assertIn("Подробнее и билеты: https://www.cheldrama.ru/plays/king-lear/", text)
+
     def test_max_request_uses_current_domain_and_authorization_header(self):
         transport = MemoryHttpTransport()
         sender = MaxApiSender("fake-max-token", transport)
@@ -93,6 +110,21 @@ class OutgoingDeliveryTests(unittest.TestCase):
         self.assertEqual(button, {
             "type": "callback", "text": "Отписаться", "payload": "unsubscribe"
         })
+
+    def test_max_renders_reply_cards_as_readable_text(self):
+        transport = MemoryHttpTransport()
+        sender = MaxApiSender("fake-max-token", transport)
+        card = Card(
+            "Король Лир",
+            "09.10.2026 в 18:30",
+            "Драма · 16+",
+            "https://www.cheldrama.ru/plays/king-lear/",
+            None,
+        )
+        sender.send(OutgoingMessage("max", "18", Reply("Ближайшие спектакли:", (card,))))
+        text = json.loads(transport.requests[0].body)["text"]
+        self.assertIn("🎭 Король Лир", text)
+        self.assertIn("Подробнее: https://www.cheldrama.ru/plays/king-lear/", text)
 
     def test_sender_rejects_message_for_other_channel(self):
         with self.assertRaises(ValueError):

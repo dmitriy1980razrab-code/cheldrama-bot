@@ -116,6 +116,22 @@ def _vk_keyboard(message: OutgoingMessage) -> str | None:
     )
 
 
+def _message_text(message: OutgoingMessage) -> str:
+    """Render web-style reply cards as readable text for messenger APIs."""
+    sections = [message.reply.text.strip()]
+    for card in message.reply.cards:
+        lines = [f"🎭 {card.title}"]
+        if card.subtitle:
+            lines.append(card.subtitle)
+        if card.details:
+            lines.append(card.details)
+        if card.play_url:
+            label = "Подробнее и билеты" if card.ticket_event_id else "Подробнее"
+            lines.append(f"{label}: {card.play_url}")
+        sections.append("\n".join(lines))
+    return "\n\n".join(section for section in sections if section)
+
+
 def _max_attachments(message: OutgoingMessage) -> list[dict]:
     if not message.buttons:
         return []
@@ -154,7 +170,7 @@ class VkApiSender:
             "v": self._api_version,
             "peer_id": message.external_user_id,
             "random_id": str(self._random_id()),
-            "message": message.reply.text,
+            "message": _message_text(message),
         }
         keyboard = _vk_keyboard(message)
         if keyboard:
@@ -178,7 +194,7 @@ class MaxApiSender:
     def send(self, message: OutgoingMessage) -> None:
         if message.channel != "max":
             raise ValueError("MAX sender accepts only MAX messages")
-        body: dict = {"text": message.reply.text}
+        body: dict = {"text": _message_text(message)}
         attachments = _max_attachments(message)
         if attachments:
             body["attachments"] = attachments
