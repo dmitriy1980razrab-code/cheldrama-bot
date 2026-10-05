@@ -29,6 +29,9 @@ class IntentTests(unittest.TestCase):
     def test_weekday(self):
         self.assertEqual(detect_intent("Что идёт в среду?").intent, Intent.SCHEDULE_WEEKDAY)
 
+    def test_named_date(self):
+        self.assertEqual(detect_intent("Что идёт 26 декабря?").intent, Intent.SCHEDULE_DATE)
+
     def test_new_year_campaign(self):
         self.assertEqual(detect_intent("Новогодняя кампания").intent, Intent.NEW_YEAR)
 
@@ -43,6 +46,9 @@ class IntentTests(unittest.TestCase):
 
     def test_age(self):
         self.assertEqual(detect_intent("Что посмотреть ребёнку 10 лет?").intent, Intent.AGE)
+
+    def test_childrens_schedule_without_age(self):
+        self.assertEqual(detect_intent("Что посмотреть ребёнку?").intent, Intent.AGE)
 
 
 if __name__ == "__main__":

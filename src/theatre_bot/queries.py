@@ -160,6 +160,28 @@ def upcoming_by_age(
     return _rows_to_performances(rows)
 
 
+def upcoming_for_catalog_kind(
+    connection: sqlite3.Connection,
+    catalog_kind: str,
+    from_time: datetime,
+    limit: int = 10,
+) -> list[Performance]:
+    rows = connection.execute(
+        """
+        SELECT p.title, p.genre, p.age_rating, p.source_url AS play_url,
+               e.starts_at, e.venue, e.ticket_event_id
+        FROM performances e
+        JOIN plays p ON p.id = e.play_id
+        WHERE e.status = 'scheduled' AND e.starts_at >= ?
+          AND p.is_active = 1 AND p.catalog_kind = ?
+        ORDER BY e.starts_at, p.title
+        LIMIT ?
+        """,
+        (from_time.isoformat(timespec="minutes"), catalog_kind, limit),
+    ).fetchall()
+    return _rows_to_performances(rows)
+
+
 def cast_for_play(connection: sqlite3.Connection, play_id: int) -> list[tuple[str | None, str]]:
     rows = connection.execute(
         """

@@ -119,6 +119,30 @@ class DialogTests(unittest.TestCase):
         self.assertEqual(len(reply.cards), 1)
         self.assertEqual(reply.cards[0].title, "Третий спектакль")
 
+    def test_plain_weekday_means_nearest_upcoming_weekday(self):
+        reply = answer(
+            self.connection,
+            "Что идёт в субботу?",
+            datetime(2026, 9, 18, 12, 0),
+        )
+        self.assertEqual([card.title for card in reply.cards], ["Первый спектакль"])
+
+    def test_next_weekday_means_weekday_of_next_calendar_week(self):
+        reply = answer(
+            self.connection,
+            "Что идёт в следующий вторник?",
+            datetime(2026, 9, 18, 12, 0),
+        )
+        self.assertEqual([card.title for card in reply.cards], ["Третий спектакль"])
+
+    def test_named_date(self):
+        reply = answer(
+            self.connection,
+            "Что идёт 25 декабря?",
+            datetime(2026, 9, 18, 12, 0),
+        )
+        self.assertEqual([card.title for card in reply.cards], ["Новогодняя сказка"])
+
     def test_genre_returns_repertoire(self):
         reply = answer(self.connection, "Покажите драмы", datetime(2026, 9, 18, 12, 0))
         self.assertIn("Первый спектакль", reply.text)
@@ -199,6 +223,14 @@ class DialogTests(unittest.TestCase):
             datetime(2026, 9, 18, 12, 0),
         )
         self.assertEqual([card.title for card in reply.cards], ["Второй спектакль"])
+
+    def test_childrens_schedule_without_age(self):
+        reply = answer(
+            self.connection,
+            "Что посмотреть ребёнку?",
+            datetime(2026, 9, 18, 12, 0),
+        )
+        self.assertEqual([card.title for card in reply.cards], ["Новогодняя сказка"])
 
     def test_genre_and_date_are_combined(self):
         reply = answer(

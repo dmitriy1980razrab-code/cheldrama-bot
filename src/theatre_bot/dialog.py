@@ -21,11 +21,27 @@ from theatre_bot.queries import (
     upcoming_for_play,
     upcoming_for_artist,
     upcoming_by_age,
+    upcoming_for_catalog_kind,
     venues_for_play,
 )
 
 
 THEATRE_TIMEZONE = timezone(timedelta(hours=5))
+
+MONTHS = {
+    "января": 1,
+    "февраля": 2,
+    "марта": 3,
+    "апреля": 4,
+    "мая": 5,
+    "июня": 6,
+    "июля": 7,
+    "августа": 8,
+    "сентября": 9,
+    "октября": 10,
+    "ноября": 11,
+    "декабря": 12,
+}
 
 
 @dataclass(frozen=True)
@@ -56,12 +72,22 @@ def _requested_date(text: str, today: date) -> date | None:
     if "сегодня" in normalized:
         return today
     match = re.search(r"(?<!\d)(\d{1,2})[./](\d{1,2})(?:[./](\d{4}))?(?!\d)", normalized)
-    if not match:
-        return None
-    day, month = map(int, match.group(1, 2))
-    year = int(match.group(3)) if match.group(3) else today.year
+    if match:
+        day, month = map(int, match.group(1, 2))
+        supplied_year = match.group(3)
+    else:
+        named = re.search(
+            r"(?<!\d)(\d{1,2})\s+(" + "|".join(MONTHS) + r")(?:\s+(\d{4}))?(?!\d)",
+            normalized,
+        )
+        if not named:
+            return None
+        day = int(named.group(1))
+        month = MONTHS[named.group(2)]
+        supplied_year = named.group(3)
+    year = int(supplied_year) if supplied_year else today.year
     candidate = date(year, month, day)
-    if not match.group(3) and candidate < today:
+    if not supplied_year and candidate < today:
         candidate = date(year + 1, month, day)
     return candidate
 
@@ -100,8 +126,13 @@ def _weekday_date(text: str, today: date) -> date | None:
         return None
     monday = today - timedelta(days=today.weekday())
     if "следующ" in normalized:
-        monday += timedelta(days=7)
-    return monday + timedelta(days=weekday)
+        return monday + timedelta(days=7 + weekday)
+    if "этой недел" in normalized:
+        return monday + timedelta(days=weekday)
+    days_ahead = (weekday - today.weekday()) % 7
+    if "следующ" in normalized and days_ahead == 0:
+        days_ahead = 7
+    return today + timedelta(days=days_ahead)
 
 
 def _genre_fragment(text: str) -> str | None:
@@ -391,7 +422,11 @@ def answer(
     if intent == Intent.AGE:
         age = _requested_age(text)
         if age is None:
-            return Reply(text="Уточните возраст зрителя, например: «Что посмотреть ребёнку 10 лет?»")
+            return _reply_for_performances(
+                upcoming_for_catalog_kind(connection, "children", current, limit=10),
+                "Ближайшие спектакли для детей:",
+                "Детских спектаклей в опубликованной афише пока не найдено.",
+            )
         return _reply_for_performances(
             _filter_performances(
                 upcoming_by_age(connection, age, current, limit=30), text
