@@ -91,6 +91,31 @@ class DialogTests(unittest.TestCase):
         reply = answer(self.connection, "Что идёт на выходных?", datetime(2026, 9, 18, 12, 0))
         self.assertEqual(len(reply.cards), 2)
 
+
+    def _rename_first_play_to_king_lear(self):
+        title = "\u041a\u043e\u0440\u043e\u043b\u044c \u041b\u0438\u0440"
+        self.connection.execute(
+            "UPDATE plays SET title = ?, normalized_title = ? WHERE id = "
+            "(SELECT play_id FROM performances WHERE source_key = ?)",
+            (title, title.casefold(), "kassy:1"),
+        )
+        self.connection.commit()
+        return title
+
+    def test_king_lear_date_question_returns_dates(self):
+        title = self._rename_first_play_to_king_lear()
+        question = "\u041a\u043e\u0433\u0434\u0430 \u0431\u0443\u0434\u0435\u0442 " + title + "?"
+        reply = answer(self.connection, question, datetime(2026, 9, 18, 12, 0))
+        self.assertEqual([card.title for card in reply.cards], [title])
+        self.assertEqual(reply.cards[0].subtitle, "19.09.2026 \u0432 19:00")
+
+    def test_king_lear_cast_question_still_returns_cast(self):
+        title = self._rename_first_play_to_king_lear()
+        question = "\u041a\u0442\u043e \u0438\u0433\u0440\u0430\u0435\u0442 \u0432 " + title + "?"
+        reply = answer(self.connection, question, datetime(2026, 9, 18, 12, 0))
+        self.assertEqual(reply.cards, ())
+        self.assertIn("\u0418\u0432\u0430\u043d \u041f\u0435\u0442\u0440\u043e\u0432", reply.text)
+
     def test_play_title_returns_its_dates(self):
         reply = answer(self.connection, "Первый спектакль", datetime(2026, 9, 18, 12, 0))
         self.assertEqual(len(reply.cards), 1)

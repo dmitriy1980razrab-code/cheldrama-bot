@@ -250,7 +250,7 @@ def answer(
 
     normalized_text = text.casefold().replace("ё", "е")
     if play is not None and intent == Intent.UNKNOWN:
-        if "кто" in normalized_text or "состав" in normalized_text or "роль" in normalized_text:
+        if "кто" in normalized_text or "состав" in normalized_text or re.search(r"\bроль", normalized_text):
             intent = Intent.PLAY_CAST
         elif "о чем" in normalized_text or "режиссер" in normalized_text:
             intent = Intent.PLAY_INFO
