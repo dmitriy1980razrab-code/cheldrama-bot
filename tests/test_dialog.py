@@ -198,6 +198,33 @@ class DialogTests(unittest.TestCase):
             "Здравствуйте! Разрешите пригласить Вас в мир театра имени Н. Орлова 🎭",
         )
 
+
+    def test_director_question_returns_only_director(self):
+        title = "\u041f\u0435\u0440\u0432\u044b\u0439 \u0441\u043f\u0435\u043a\u0442\u0430\u043a\u043b\u044c"
+        question = "\u041a\u0442\u043e \u0440\u0435\u0436\u0438\u0441\u0441\u0451\u0440 " + title + "?"
+        expected = "\u0420\u0435\u0436\u0438\u0441\u0441\u0451\u0440 \u0441\u043f\u0435\u043a\u0442\u0430\u043a\u043b\u044f \u00ab" + title + "\u00bb \u2014 \u0420\u0435\u0436\u0438\u0441\u0441\u0451\u0440."
+        for channel in ("local", "site", "vk"):
+            with self.subTest(channel=channel):
+                reply = answer(self.connection, question, datetime(2026, 9, 18, 12, 0), channel=channel)
+                self.assertEqual(reply.text, expected)
+                self.assertEqual(reply.cards, ())
+
+    def test_summary_question_keeps_annotation(self):
+        question = "\u041e \u0447\u0451\u043c \u041f\u0435\u0440\u0432\u044b\u0439 \u0441\u043f\u0435\u043a\u0442\u0430\u043a\u043b\u044c?"
+        reply = answer(self.connection, question, datetime(2026, 9, 18, 12, 0))
+        self.assertIn("\u0410\u043d\u043d\u043e\u0442\u0430\u0446\u0438\u044f", reply.text)
+        self.assertEqual(reply.cards, ())
+
+    def test_missing_director_does_not_return_annotation(self):
+        self.connection.execute("UPDATE plays SET director = NULL")
+        self.connection.commit()
+        title = "\u041f\u0435\u0440\u0432\u044b\u0439 \u0441\u043f\u0435\u043a\u0442\u0430\u043a\u043b\u044c"
+        question = "\u041a\u0442\u043e \u0440\u0435\u0436\u0438\u0441\u0441\u0435\u0440 " + title + "?"
+        reply = answer(self.connection, question, datetime(2026, 9, 18, 12, 0))
+        expected = "\u0420\u0435\u0436\u0438\u0441\u0441\u0451\u0440 \u0441\u043f\u0435\u043a\u0442\u0430\u043a\u043b\u044f \u00ab" + title + "\u00bb \u043f\u043e\u043a\u0430 \u043d\u0435 \u0443\u043a\u0430\u0437\u0430\u043d \u0432 \u0431\u0430\u0437\u0435."
+        self.assertEqual(reply.text, expected)
+        self.assertEqual(reply.cards, ())
+
     def test_help(self):
         reply = answer(self.connection, "Что ты умеешь?", datetime(2026, 9, 18, 12, 0))
         self.assertIn("жанре", reply.text)

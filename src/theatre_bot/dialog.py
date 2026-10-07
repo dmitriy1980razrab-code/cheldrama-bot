@@ -269,6 +269,10 @@ def answer(
         return Reply(text=f"Действующие лица и исполнители спектакля «{play.title}»:\n" + "\n".join(lines))
 
     if play is not None and intent == Intent.PLAY_INFO:
+        if "\u0440\u0435\u0436\u0438\u0441\u0441\u0435\u0440" in normalized_text:
+            if play.director:
+                return Reply(text=f"\u0420\u0435\u0436\u0438\u0441\u0441\u0451\u0440 \u0441\u043f\u0435\u043a\u0442\u0430\u043a\u043b\u044f \u00ab{play.title}\u00bb \u2014 {play.director}.")
+            return Reply(text=f"\u0420\u0435\u0436\u0438\u0441\u0441\u0451\u0440 \u0441\u043f\u0435\u043a\u0442\u0430\u043a\u043b\u044f \u00ab{play.title}\u00bb \u043f\u043e\u043a\u0430 \u043d\u0435 \u0443\u043a\u0430\u0437\u0430\u043d \u0432 \u0431\u0430\u0437\u0435.")
         parts = [f"«{play.title}»"]
         if play.summary:
             parts.append(play.summary)
