@@ -8,6 +8,15 @@ from theatre_bot.intents import Intent, detect_intent
 
 
 class IntentTests(unittest.TestCase):
+    def test_play_participants(self):
+        questions = (
+            "\u0423\u0447\u0430\u0441\u0442\u043d\u0438\u043a\u0438 \u0441\u043f\u0435\u043a\u0442\u0430\u043a\u043b\u044f",
+            "\u0423\u0447\u0430\u0441\u0442\u043d\u0438\u043a\u0438 \u0441\u043f\u0435\u043a\u0442\u0430\u043a\u043b\u044f \u041e\u0431\u043b\u043e\u043c\u043e\u0432",
+        )
+        for question in questions:
+            with self.subTest(question=question):
+                self.assertEqual(detect_intent(question).intent, Intent.PLAY_CAST)
+
     def test_nearest_schedule(self):
         self.assertEqual(detect_intent("Что идет в ближайшее время?").intent, Intent.SCHEDULE_NEAREST)
 
