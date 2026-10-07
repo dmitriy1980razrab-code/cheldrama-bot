@@ -30,6 +30,15 @@ HTML = """
 
 
 class PlayParserTests(unittest.TestCase):
+    def test_director_credit_with_yo(self):
+        suffix = chr(1077) + chr(1088) + "-"
+        replacement = chr(1105) + chr(1088) + "-"
+        self.assertEqual(HTML.count(suffix), 1)
+        html = HTML.replace(suffix, replacement, 1)
+        expected = parse_play(HTML).director
+        self.assertIsNotNone(expected)
+        self.assertEqual(parse_play(html).director, expected)
+
     def test_parses_details_and_cast(self):
         play = parse_play(HTML)
         self.assertEqual(play.title, "Пять вечеров")

@@ -99,7 +99,7 @@ class _PlayParser(HTMLParser):
             self.pending_credit = text
             self.capture = None
         elif tag == "dd" and self.capture == "credit_role":
-            if "режиссер-постановщик" in text.casefold() and self.pending_credit:
+            if "режиссер-постановщик" in text.casefold().replace("ё", "е") and self.pending_credit:
                 self.director = self.pending_credit
             self.capture = None
         elif tag == "a" and self.person_href:
