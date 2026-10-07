@@ -186,6 +186,8 @@ def _new_year_period(today: date) -> tuple[date, date]:
 
 
 def _looks_like_follow_up(text: str) -> bool:
+    if re.search(r'\u00ab[^\u00bb]+\u00bb|"[^"]+"|\u201e[^\u201c]+\u201c', text):
+        return False
     normalized = text.casefold().replace("ё", "е")
     words = re.findall(r"[a-zа-я0-9]+", normalized)
     markers = ("там", "этот", "этом", "нем", "кто", "когда", "ближай", "еще", "роль")

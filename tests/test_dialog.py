@@ -239,6 +239,26 @@ class DialogTests(unittest.TestCase):
         reply = answer(self.connection, "Привет", datetime(2026, 9, 18, 12, 0))
         self.assertEqual(reply.text, "Новый текст")
 
+
+    def test_unknown_quoted_play_does_not_reuse_history(self):
+        previous_play = "\u041f\u0435\u0440\u0432\u044b\u0439 \u0441\u043f\u0435\u043a\u0442\u0430\u043a\u043b\u044c"
+        previous_artist = "\u0413\u0434\u0435 \u0438\u0433\u0440\u0430\u0435\u0442 \u041f\u0435\u0442\u0440\u043e\u0432?"
+        prefix = "\u041a\u043e\u0433\u0434\u0430 \u0431\u0443\u0434\u0435\u0442 \u0441\u043f\u0435\u043a\u0442\u0430\u043a\u043b\u044c "
+        unknown = "\u041d\u0435\u0441\u0443\u0449\u0435\u0441\u0442\u0432\u0443\u044e\u0449\u0438\u0439 \u0441\u043f\u0435\u043a\u0442\u0430\u043a\u043b\u044c 999"
+        for previous in (previous_play, previous_artist):
+            for opening, closing in (("\u00ab", "\u00bb"), ('"', '"'), ("\u201e", "\u201c")):
+                for channel in ("site", "vk"):
+                    with self.subTest(previous=previous, quotes=opening, channel=channel):
+                        reply = answer(
+                            self.connection, prefix + opening + unknown + closing + "?",
+                            datetime(2026, 9, 18, 12, 0),
+                            history=(previous,), channel=channel,
+                        )
+                        self.assertEqual(reply.cards, ())
+                        self.assertNotIn(previous_play, reply.text)
+                        self.assertNotIn("\u0418\u0432\u0430\u043d \u041f\u0435\u0442\u0440\u043e\u0432", reply.text)
+                        self.assertTrue(reply.text.strip())
+
     def test_follow_up_cast_uses_previous_play(self):
         reply = answer(
             self.connection,
