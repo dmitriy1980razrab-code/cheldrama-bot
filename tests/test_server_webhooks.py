@@ -58,6 +58,61 @@ class ServerWebhookTests(unittest.TestCase):
                     raise
                 threading.Event().wait(0.05)
 
+    def test_server_processor_preserves_only_its_user_context(self):
+        from theatre_bot.channels import IncomingMessage
+        from theatre_bot.database import sync_affiche
+        from theatre_bot.site_affiche import AfficheItem
+        from theatre_bot.server_webhooks import ServerChannelProcessor
+        from theatre_bot.subscribers import IdentityProtector
+
+        theatre = connect(self.root / "theatre.sqlite3")
+        try:
+            sync_affiche(theatre, [AfficheItem(
+                title="\u0413\u0430\u043c\u043b\u0435\u0442",
+                play_url="https://www.cheldrama.ru/plays/hamlet/",
+                starts_at="2099-10-10T19:00",
+                genre="\u0414\u0440\u0430\u043c\u0430",
+                age_rating="16+", duration=None,
+                venue="Main", image_url=None, ticket_event_id="context-event",
+            )])
+        finally:
+            theatre.close()
+        protector = IdentityProtector(Fernet.generate_key(), b"context-test-key" * 4)
+        processor = ServerChannelProcessor(
+            self.root / "theatre.sqlite3",
+            self.root / "subscribers.sqlite3",
+            protector,
+        )
+        for channel in ("vk", "max"):
+            with self.subTest(channel=channel):
+                processor(IncomingMessage(
+                    channel, "user-1", channel + "-first",
+                    "\u0413\u0430\u043c\u043b\u0435\u0442", "Test", None,
+                ))
+                result = processor(IncomingMessage(
+                    channel, "user-1", channel + "-follow",
+                    "\u0410 \u043a\u043e\u0433\u0434\u0430?", "Test", None,
+                ))
+                self.assertEqual(
+                    [card.title for card in result.reply.cards],
+                    ["\u0413\u0430\u043c\u043b\u0435\u0442"],
+                )
+                other = processor(IncomingMessage(
+                    channel, "user-2", channel + "-other",
+                    "\u0410 \u043a\u043e\u0433\u0434\u0430?", "Other", None,
+                ))
+                self.assertEqual(other.reply.cards, ())
+        restarted = ServerChannelProcessor(
+            self.root / "theatre.sqlite3",
+            self.root / "subscribers.sqlite3",
+            protector,
+        )
+        result = restarted(IncomingMessage(
+            "vk", "user-1", "after-restart",
+            "\u0410 \u043a\u043e\u0433\u0434\u0430?", "Test", None,
+        ))
+        self.assertEqual(result.reply.cards, ())
+
     def test_empty_environment_disables_webhooks(self):
         with patch.dict(os.environ, {}, clear=True):
             self.assertIsNone(WebhookSettings.from_environment())

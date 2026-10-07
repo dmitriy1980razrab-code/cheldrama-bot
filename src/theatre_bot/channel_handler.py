@@ -20,6 +20,73 @@ from theatre_bot.subscription_flow import (
 
 
 @dataclass(frozen=True)
+class StoredConversation:
+    pairs: tuple[tuple[str, str], ...]
+    expires_at: datetime
+
+
+class ConversationContextStore:
+    def __init__(
+        self,
+        lifetime: timedelta = timedelta(minutes=30),
+        max_sessions: int = 1000,
+    ) -> None:
+        if lifetime <= timedelta(0) or max_sessions < 1:
+            raise ValueError("Context limits must be positive")
+        self._lifetime = lifetime
+        self._max_sessions = max_sessions
+        self._items: dict[tuple[str, str], StoredConversation] = {}
+        self._lock = threading.Lock()
+
+    def _current(self, now: datetime | None) -> datetime:
+        current = now or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        return current.astimezone(timezone.utc)
+
+    def _prune(self, current: datetime) -> None:
+        expired = [
+            key for key, value in self._items.items()
+            if value.expires_at <= current
+        ]
+        for key in expired:
+            del self._items[key]
+
+    def get(
+        self,
+        channel: str,
+        external_id: str,
+        now: datetime | None = None,
+    ) -> tuple[tuple[str, str], ...]:
+        current = self._current(now)
+        with self._lock:
+            self._prune(current)
+            value = self._items.get((channel, external_id))
+            return value.pairs if value is not None else ()
+
+    def append(
+        self,
+        channel: str,
+        external_id: str,
+        question: str,
+        reply: str,
+        now: datetime | None = None,
+    ) -> None:
+        current = self._current(now)
+        key = (channel, external_id)
+        with self._lock:
+            self._prune(current)
+            previous = self._items.pop(key, None)
+            pairs = previous.pairs if previous is not None else ()
+            pairs = (pairs + ((question[:4000], reply[:8000]),))[-5:]
+            self._items[key] = StoredConversation(
+                pairs, current + self._lifetime
+            )
+            while len(self._items) > self._max_sessions:
+                del self._items[next(iter(self._items))]
+
+
+@dataclass(frozen=True)
 class StoredFlow:
     session: SubscriptionSession
     expires_at: datetime
@@ -69,11 +136,13 @@ class ChannelMessageHandler:
         subscriber_connection: sqlite3.Connection,
         protector: IdentityProtector,
         flow_store: SubscriptionFlowStore | None = None,
+        context_store: ConversationContextStore | None = None,
     ) -> None:
         self._theatre = theatre_connection
         self._subscribers = subscriber_connection
         self._protector = protector
         self._flows = flow_store or SubscriptionFlowStore()
+        self._context = context_store if context_store is not None else ConversationContextStore()
 
     def process(
         self,
@@ -123,11 +192,19 @@ class ChannelMessageHandler:
                 _buttons(flow_reply),
             )
 
+        pairs = self._context.get(
+            message.channel, message.external_user_id, now=now
+        )
         reply = answer(
             self._theatre,
             message.text,
             now=now,
             channel=message.channel,
+            history=tuple(question for question, _ in pairs),
+        )
+        self._context.append(
+            message.channel, message.external_user_id,
+            message.text, reply.text, now=now,
         )
         play = find_play_in_text(self._theatre, message.text)
         if play is None:

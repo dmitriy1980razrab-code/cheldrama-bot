@@ -52,6 +52,56 @@ class ChannelHandlerTests(unittest.TestCase):
     def message(self, event_id, text="", action=None, channel="vk", name="Анна"):
         return IncomingMessage(channel, "user-1", event_id, text, name, action)
 
+    def test_context_survives_handler_recreation(self):
+        from theatre_bot.channel_handler import ConversationContextStore
+        store = ConversationContextStore()
+        first = ChannelMessageHandler(
+            self.theatre, self.subscribers, self.protector, context_store=store
+        )
+        first.process(self.message("context-1", "\u0413\u0430\u043c\u043b\u0435\u0442"), self.now)
+        second = ChannelMessageHandler(
+            self.theatre, self.subscribers, self.protector, context_store=store
+        )
+        result = second.process(self.message("context-2", "\u0410 \u043a\u043e\u0433\u0434\u0430?"), self.now)
+        self.assertEqual([card.title for card in result.reply.cards], ["\u0413\u0430\u043c\u043b\u0435\u0442"])
+
+    def test_expired_context_is_not_used(self):
+        from datetime import timedelta
+        from theatre_bot.channel_handler import ConversationContextStore
+        handler = ChannelMessageHandler(
+            self.theatre, self.subscribers, self.protector,
+            context_store=ConversationContextStore(),
+        )
+        handler.process(self.message("expiry-1", "\u0413\u0430\u043c\u043b\u0435\u0442"), self.now)
+        result = handler.process(
+            self.message("expiry-2", "\u0410 \u043a\u043e\u0433\u0434\u0430?"),
+            self.now + timedelta(minutes=30),
+        )
+        self.assertEqual(result.reply.cards, ())
+
+    def test_context_is_not_shared_with_another_user(self):
+        from theatre_bot.channel_handler import ConversationContextStore
+        handler = ChannelMessageHandler(
+            self.theatre, self.subscribers, self.protector,
+            context_store=ConversationContextStore(),
+        )
+        handler.process(self.message("isolation-1", "\u0413\u0430\u043c\u043b\u0435\u0442"), self.now)
+        other = IncomingMessage("vk", "user-2", "isolation-2", "\u0410 \u043a\u043e\u0433\u0434\u0430?", "Other", None)
+        result = handler.process(other, self.now)
+        self.assertEqual(result.reply.cards, ())
+
+    def test_button_actions_do_not_enter_conversation_context(self):
+        from theatre_bot.channel_handler import ConversationContextStore
+        store = ConversationContextStore()
+        handler = ChannelMessageHandler(
+            self.theatre, self.subscribers, self.protector, context_store=store
+        )
+        handler.process(self.message("button-context-1", "\u0413\u0430\u043c\u043b\u0435\u0442"), self.now)
+        before = store.get("vk", "user-1", now=self.now)
+        self.assertEqual(len(before), 1)
+        handler.process(self.message("button-context-2", action="subscribe"), self.now)
+        self.assertEqual(store.get("vk", "user-1", now=self.now), before)
+
     def test_regular_message_is_answered_by_dialog_core(self):
         result = self.handler.process(
             self.message("1", "Что идёт?"), self.now

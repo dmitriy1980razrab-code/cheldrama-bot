@@ -5,7 +5,11 @@ import os
 from pathlib import Path
 from typing import Callable
 
-from theatre_bot.channel_handler import ChannelMessageHandler, SubscriptionFlowStore
+from theatre_bot.channel_handler import (
+    ChannelMessageHandler,
+    ConversationContextStore,
+    SubscriptionFlowStore,
+)
 from theatre_bot.channels import IncomingMessage, OutgoingMessage
 from theatre_bot.database import connect, initialize
 from theatre_bot.platform_adapters import MaxWebhookAdapter, VkWebhookAdapter
@@ -96,6 +100,7 @@ class ServerChannelProcessor:
         self._subscriber_path = subscriber_database_path
         self._protector = protector
         self._flows = SubscriptionFlowStore()
+        self._context = ConversationContextStore()
 
     def __call__(self, message: IncomingMessage) -> OutgoingMessage | None:
         theatre = connect(self._theatre_path)
@@ -108,6 +113,7 @@ class ServerChannelProcessor:
                 subscribers,
                 self._protector,
                 flow_store=self._flows,
+                context_store=self._context,
             )
             return handler.process(message)
         finally:
