@@ -99,7 +99,15 @@ class _PlayParser(HTMLParser):
             self.pending_credit = text
             self.capture = None
         elif tag == "dd" and self.capture == "credit_role":
-            if "режиссер-постановщик" in text.casefold().replace("ё", "е") and self.pending_credit:
+            credit_role = text.casefold().replace("\u0451", "\u0435")
+            director_roles = {
+                "\u0440\u0435\u0436\u0438\u0441\u0441\u0435\u0440-\u043f\u043e\u0441\u0442\u0430\u043d\u043e\u0432\u0449\u0438\u043a",
+                "\u0440\u0435\u0436\u0438\u0441\u0441\u0435\u0440",
+                "\u043f\u043e\u0441\u0442\u0430\u043d\u043e\u0432\u043a\u0430",
+                "\u043f\u043e\u0441\u0442\u0430\u043d\u043e\u0432\u043a\u0430 \u0438 \u043c\u0443\u0437\u044b\u043a\u0430\u043b\u044c\u043d\u043e\u0435 \u043e\u0444\u043e\u0440\u043c\u043b\u0435\u043d\u0438\u0435",
+                "\u0440\u0435\u0436\u0438\u0441\u0441\u0435\u0440 \u0438 \u0445\u0443\u0434\u043e\u0436\u043d\u0438\u043a-\u043f\u043e\u0441\u0442\u0430\u043d\u043e\u0432\u0449\u0438\u043a",
+            }
+            if credit_role in director_roles and self.pending_credit:
                 self.director = self.pending_credit
             self.capture = None
         elif tag == "a" and self.person_href:

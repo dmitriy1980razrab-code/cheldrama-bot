@@ -39,6 +39,39 @@ class PlayParserTests(unittest.TestCase):
         self.assertIsNotNone(expected)
         self.assertEqual(parse_play(html).director, expected)
 
+
+    def test_director_credit_variants(self):
+        director = "\u0420\u0435\u0436\u0438\u0441\u0441\u0451\u0440"
+        staging = "\u041f\u043e\u0441\u0442\u0430\u043d\u043e\u0432\u043a\u0430"
+        original = "\u0420\u0435\u0436\u0438\u0441\u0441\u0435\u0440-\u043f\u043e\u0441\u0442\u0430\u043d\u043e\u0432\u0449\u0438\u043a"
+        labels = (
+            director,
+            staging,
+            staging + " \u0438 \u043c\u0443\u0437\u044b\u043a\u0430\u043b\u044c\u043d\u043e\u0435 \u043e\u0444\u043e\u0440\u043c\u043b\u0435\u043d\u0438\u0435",
+            director + " \u0438 \u0445\u0443\u0434\u043e\u0436\u043d\u0438\u043a-\u043f\u043e\u0441\u0442\u0430\u043d\u043e\u0432\u0449\u0438\u043a",
+        )
+        expected = parse_play(HTML).director
+        self.assertIsNotNone(expected)
+        self.assertEqual(HTML.count(original), 1)
+        for label in labels:
+            with self.subTest(label=label):
+                self.assertEqual(parse_play(HTML.replace(original, label, 1)).director, expected)
+
+    def test_other_director_credits_do_not_override_play_director(self):
+        director = "\u0420\u0435\u0436\u0438\u0441\u0441\u0451\u0440"
+        chief = "\u0413\u043b\u0430\u0432\u043d\u044b\u0439 " + director.lower()
+        plastic = director + " \u043f\u043e \u043f\u043b\u0430\u0441\u0442\u0438\u043a\u0435"
+        for label in (chief, plastic):
+            with self.subTest(label=label):
+                html = "<h1>Test</h1><dl><dt>Other person</dt><dd>" + label + "</dd></dl>"
+                self.assertIsNone(parse_play(html).director)
+        html = (
+            "<h1>Test</h1><dl><dt>Chief</dt><dd>" + chief +
+            "</dd><dt>Play director</dt><dd>" + director +
+            "</dd><dt>Plastic director</dt><dd>" + plastic + "</dd></dl>"
+        )
+        self.assertEqual(parse_play(html).director, "Play director")
+
     def test_parses_details_and_cast(self):
         play = parse_play(HTML)
         self.assertEqual(play.title, "Пять вечеров")
