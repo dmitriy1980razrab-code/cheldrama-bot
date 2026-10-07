@@ -172,6 +172,13 @@ class DialogTests(unittest.TestCase):
         reply = answer(self.connection, "Покажите драмы", datetime(2026, 9, 18, 12, 0))
         self.assertIn("Первый спектакль", reply.text)
 
+    def test_new_year_2026_period_starts_on_december_19(self):
+        from datetime import date
+        from theatre_bot.dialog import _new_year_period
+        expected = (date(2026, 12, 19), date(2027, 1, 10))
+        self.assertEqual(_new_year_period(date(2026, 10, 8)), expected)
+        self.assertEqual(_new_year_period(date(2027, 1, 5)), expected)
+
     def test_new_year_reply_has_no_cards(self):
         reply = answer(self.connection, "Новогодняя кампания", datetime(2026, 9, 18, 12, 0))
         self.assertIn("Новогодняя сказка", reply.text)

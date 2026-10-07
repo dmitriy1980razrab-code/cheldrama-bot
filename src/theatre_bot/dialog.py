@@ -180,9 +180,9 @@ def _format_duration(minutes: int) -> str:
 
 
 def _new_year_period(today: date) -> tuple[date, date]:
-    if today.month == 1 and today.day <= 10:
-        return date(today.year - 1, 12, 20), date(today.year, 1, 10)
-    return date(today.year, 12, 20), date(today.year + 1, 1, 10)
+    season_year = today.year - 1 if today.month == 1 and today.day <= 10 else today.year
+    first_day = 19 if season_year == 2026 else 20
+    return date(season_year, 12, first_day), date(season_year + 1, 1, 10)
 
 
 def _looks_like_follow_up(text: str) -> bool:
@@ -376,7 +376,7 @@ def answer(
             f"• {item.starts_at.strftime('%d.%m.%Y в %H:%M')} — {item.title}"
             for item in items
         ]
-        return Reply(text=render_template(connection, "new_year", "list") + "\n" + "\n".join(lines))
+        return Reply(text=render_template(connection, "new_year", "list", first_day=first_day.day) + "\n" + "\n".join(lines))
 
     if intent == Intent.SCHEDULE_NEAREST:
         return _reply_for_performances(
