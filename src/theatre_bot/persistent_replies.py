@@ -8,7 +8,7 @@ import sqlite3
 from typing import Callable, Protocol
 
 from theatre_bot.channels import OutgoingButton, OutgoingMessage
-from theatre_bot.dialog import Card, Reply
+from theatre_bot.dialog import Card, PerformanceChoice, Reply
 from theatre_bot.subscribers import (
     IdentityProtector,
     connect_subscribers,
@@ -50,6 +50,7 @@ def _serialize(message: OutgoingMessage) -> bytes:
         "reply": {
             "text": message.reply.text,
             "cards": [asdict(card) for card in message.reply.cards],
+            "choices": [asdict(choice) for choice in message.reply.choices],
         },
         "buttons": [asdict(button) for button in message.buttons],
     }
@@ -66,6 +67,7 @@ def _deserialize(payload: bytes) -> OutgoingMessage:
         reply=Reply(
             value["reply"]["text"],
             tuple(Card(**card) for card in value["reply"].get("cards", [])),
+            tuple(PerformanceChoice(**choice) for choice in value["reply"].get("choices", [])),
         ),
         buttons=tuple(OutgoingButton(**button) for button in value.get("buttons", [])),
     )

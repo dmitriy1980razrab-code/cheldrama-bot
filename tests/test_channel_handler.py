@@ -108,29 +108,32 @@ class ChannelHandlerTests(unittest.TestCase):
         )
         self.assertEqual(len(result.reply.cards), 1)
 
-    def test_play_message_adds_subscription_button(self):
-        result = self.handler.process(
-            self.message("2", "Когда идёт Гамлет?"), self.now
+    def test_play_message_offers_date_before_subscription(self):
+        result = self.handler.process(self.message("2", "Когда идёт Гамлет?"), self.now)
+        self.assertEqual([button.action for button in result.buttons], ["choose:kassy:event-1"])
+        self.assertFalse(result.reply.cards[0].play_url)
+        selected = self.handler.process(
+            self.message("2-date", action=result.buttons[0].action), self.now
         )
-        actions = [button.action for button in result.buttons]
+        actions = [button.action.rsplit(":", 1)[-1] for button in selected.buttons]
         self.assertIn("subscribe", actions)
         self.assertNotIn("unsubscribe", actions)
 
     def test_button_actions_complete_subscription(self):
-        self.handler.process(self.message("3", "Гамлет"), self.now)
+        result = self.handler.process(self.message("3", "Гамлет"), self.now)
+        result = self.handler.process(
+            self.message("3-date", action=result.buttons[0].action), self.now
+        )
         for number, action in enumerate((
             "subscribe", "accept_personal_data", "accept_service", "decline_marketing"
         ), start=4):
-            result = self.handler.process(
-                self.message(str(number), action=action), self.now
-            )
+            button = next(b for b in result.buttons if b.action.endswith(":" + action))
+            result = self.handler.process(self.message(str(number), action=button.action), self.now)
         self.assertIn("Вы подписаны", result.reply.text)
-        self.assertEqual(
-            self.subscribers.execute(
-                "SELECT status FROM subscribers"
-            ).fetchone()[0],
-            "active",
-        )
+        row = self.subscribers.execute(
+            "SELECT status, performance_key FROM subscriptions"
+        ).fetchone()
+        self.assertEqual(tuple(row), ("active", "kassy:event-1"))
 
     def test_duplicate_event_is_ignored(self):
         message = self.message("duplicate", "Что идёт?")
@@ -144,18 +147,19 @@ class ChannelHandlerTests(unittest.TestCase):
         self.assertIn("Сначала выберите спектакль", result.reply.text)
 
     def test_max_name_is_stored_after_consent(self):
-        self.handler.process(
+        result = self.handler.process(
             self.message("m1", "Гамлет", channel="max", name="Борис"), self.now
         )
-        self.handler.process(
-            self.message("m2", action="subscribe", channel="max", name="Борис"), self.now
+        result = self.handler.process(
+            self.message("m-date", action=result.buttons[0].action, channel="max", name="Борис"),
+            self.now,
         )
-        self.handler.process(
-            self.message("m3", action="accept_personal_data", channel="max", name="Борис"), self.now
-        )
-        row = self.subscribers.execute(
-            "SELECT display_name_encrypted FROM subscribers"
-        ).fetchone()
+        for event_id, action in (("m2", "subscribe"), ("m3", "accept_personal_data")):
+            button = next(b for b in result.buttons if b.action.endswith(":" + action))
+            result = self.handler.process(
+                self.message(event_id, action=button.action, channel="max", name="Борис"), self.now
+            )
+        row = self.subscribers.execute("SELECT display_name_encrypted FROM subscribers").fetchone()
         self.assertEqual(self.protector.decrypt(row[0]), "Борис")
 
 

@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 import sqlite3
+import secrets
 import threading
 
 from theatre_bot.channels import IncomingMessage, OutgoingButton, OutgoingMessage
-from theatre_bot.dialog import Reply, answer
+from theatre_bot.dialog import Reply, answer, selected_performance_reply
 from theatre_bot.platform_adapters import register_inbound_event
-from theatre_bot.queries import find_play_in_text
 from theatre_bot.subscribers import IdentityProtector
 from theatre_bot.subscription_flow import (
     FlowReply,
@@ -124,9 +124,10 @@ class SubscriptionFlowStore:
                 return None
             return value.session
 
+    def clear(self, channel: str, external_id: str) -> None:
+        with self._lock:
+            self._items.pop((channel, external_id), None)
 
-def _buttons(reply: FlowReply) -> tuple[OutgoingButton, ...]:
-    return tuple(OutgoingButton(button.action, button.label) for button in reply.buttons)
 
 
 class ChannelMessageHandler:
@@ -144,6 +145,46 @@ class ChannelMessageHandler:
         self._flows = flow_store or SubscriptionFlowStore()
         self._context = context_store if context_store is not None else ConversationContextStore()
 
+    def _flow_buttons(
+        self, reply: FlowReply, session: SubscriptionSession,
+    ) -> tuple[OutgoingButton, ...]:
+        return tuple(
+            OutgoingButton(f"flow:{session.interaction_id}:{button.action}", button.label)
+            for button in reply.buttons
+        )
+
+    def _selected_response(
+        self, message: IncomingMessage, reply: Reply, now: datetime | None,
+    ) -> OutgoingMessage:
+        card = reply.cards[0]
+        performance_reply = selected_performance_reply(
+            self._theatre, card.source_key, now, message.channel
+        )
+        if not performance_reply.cards:
+            return OutgoingMessage(message.channel, message.external_user_id, reply)
+        card = replace(performance_reply.cards[0], details=card.details)
+        # The key is authoritative; read its current time rather than parsing display text.
+        row = self._theatre.execute(
+            "SELECT starts_at FROM performances WHERE source_key = ?", (card.source_key,)
+        ).fetchone()
+        session = SubscriptionSession(
+            channel=message.channel,
+            external_id=message.external_user_id,
+            display_name=message.display_name,
+            play_key=card.play_url,
+            play_title=card.title,
+            performance_key=card.source_key,
+            selected_starts_at=row["starts_at"],
+            interaction_id=secrets.token_urlsafe(12),
+        )
+        self._flows.put(session, now=now)
+        menu = subscription_menu(self._subscribers, self._protector, session)
+        combined = Reply(reply.text + "\n\n" + menu.text, (card,))
+        return OutgoingMessage(
+            message.channel, message.external_user_id,
+            combined, self._flow_buttons(menu, session),
+        )
+
     def process(
         self,
         message: IncomingMessage,
@@ -152,84 +193,87 @@ class ChannelMessageHandler:
         if message.channel not in {"vk", "max"}:
             raise ValueError("unsupported channel")
         if not register_inbound_event(
-            self._subscribers,
-            message.channel,
-            message.external_message_id,
-            at=now,
+            self._subscribers, message.channel, message.external_message_id, at=now,
         ):
             return None
 
+        def response(reply: Reply, buttons=()) -> OutgoingMessage:
+            return OutgoingMessage(message.channel, message.external_user_id, reply, buttons)
+
+        if message.action and message.action.startswith("choose:"):
+            key = message.action[len("choose:"):]
+            self._flows.clear(message.channel, message.external_user_id)
+            if not key or len(key) > 128:
+                return response(Reply("Этот показ недоступен. Запросите актуальные даты спектакля."))
+            reply = selected_performance_reply(self._theatre, key, now, message.channel)
+            if not reply.cards:
+                return response(reply)
+            self._context.append(
+                message.channel, message.external_user_id,
+                reply.cards[0].title, reply.text, now=now,
+            )
+            return self._selected_response(message, reply, now)
+
+        flow = self._flows.get(message.channel, message.external_user_id, now=now)
         if message.action == "legal":
             legal = legal_documents_reply()
-            return OutgoingMessage(
-                message.channel,
-                message.external_user_id,
-                Reply(legal.text),
-                _buttons(legal),
-            )
+            buttons = self._flow_buttons(legal, flow) if flow is not None else ()
+            return response(Reply(legal.text), buttons)
 
-        flow = self._flows.get(
-            message.channel, message.external_user_id, now=now
-        )
         if message.action:
-            if flow is None:
-                return OutgoingMessage(
-                    message.channel,
-                    message.external_user_id,
-                    Reply("Сначала выберите спектакль, на уведомления о котором хотите подписаться."),
-                )
+            parts = message.action.split(":", 2)
+            if (
+                flow is None or flow.performance_key is None
+                or len(parts) != 3 or parts[0] != "flow"
+                or parts[1] != flow.interaction_id
+            ):
+                return response(Reply(
+                    "Сначала выберите спектакль и показ заново: эта кнопка уже неактуальна."
+                ))
+            action = parts[2]
+            if action in {"subscribe", "accept_personal_data", "accept_service",
+                          "accept_marketing", "decline_marketing"}:
+                current = selected_performance_reply(self._theatre, flow.performance_key, now)
+                row = self._theatre.execute(
+                    "SELECT starts_at FROM performances WHERE source_key = ?",
+                    (flow.performance_key,),
+                ).fetchone()
+                if not current.cards or row["starts_at"] != flow.selected_starts_at:
+                    self._flows.clear(message.channel, message.external_user_id)
+                    return response(Reply(
+                        "Дата или доступность показа изменились. Выберите показ заново."
+                    ))
             updated, flow_reply = handle_subscription_action(
-                self._subscribers,
-                self._protector,
-                flow,
-                message.action,
+                self._subscribers, self._protector, flow, action,
             )
             self._flows.put(updated, now=now)
-            return OutgoingMessage(
-                message.channel,
-                message.external_user_id,
-                Reply(flow_reply.text),
-                _buttons(flow_reply),
-            )
+            return response(Reply(flow_reply.text), self._flow_buttons(flow_reply, updated))
 
-        pairs = self._context.get(
-            message.channel, message.external_user_id, now=now
-        )
+        self._flows.clear(message.channel, message.external_user_id)
+        pairs = self._context.get(message.channel, message.external_user_id, now=now)
         reply = answer(
-            self._theatre,
-            message.text,
-            now=now,
-            channel=message.channel,
+            self._theatre, message.text, now=now, channel=message.channel,
             history=tuple(question for question, _ in pairs),
         )
         self._context.append(
             message.channel, message.external_user_id,
             message.text, reply.text, now=now,
         )
-        play = find_play_in_text(self._theatre, message.text)
-        if play is None:
-            return OutgoingMessage(
-                message.channel, message.external_user_id, reply
+        if reply.choices:
+            return response(
+                Reply(reply.text, reply.cards),
+                tuple(OutgoingButton(f"choose:{choice.source_key}", choice.label)
+                      for choice in reply.choices),
             )
-
-        session = SubscriptionSession(
-            channel=message.channel,
-            external_id=message.external_user_id,
-            display_name=message.display_name,
-            play_key=play.source_url,
-            play_title=play.title,
-        )
-        self._flows.put(session, now=now)
-        menu = subscription_menu(
-            self._subscribers, self._protector, session
-        )
-        combined = Reply(
-            reply.text + "\n\n" + menu.text,
-            reply.cards,
-        )
-        return OutgoingMessage(
-            message.channel,
-            message.external_user_id,
-            combined,
-            _buttons(menu),
-        )
+        if len(reply.cards) == 1 and reply.cards[0].source_key:
+            return self._selected_response(message, reply, now)
+        if len(reply.cards) > 1:
+            buttons = tuple(
+                OutgoingButton(
+                    f"choose:{card.source_key}",
+                    f"{card.title[:18]} · {card.subtitle}",
+                )
+                for card in reply.cards if card.source_key
+            )
+            return response(reply, buttons)
+        return response(reply)

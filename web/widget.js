@@ -33,23 +33,44 @@ function addCard(card) {
   subtitle.textContent = card.subtitle;
   const details = document.createElement('span');
   details.textContent = card.details;
-  const link = document.createElement('a');
-  link.href = card.play_url;
-  link.target = '_blank';
-  link.rel = 'noopener noreferrer';
-  link.textContent = card.ticket_event_id ? 'Подробнее и билеты' : 'Подробнее';
-  node.append(title, subtitle, details, link);
+  node.append(title, subtitle, details);
+  if (card.play_url && card.play_url.startsWith('https://')) {
+    const link = document.createElement('a');
+    link.href = card.play_url;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = card.ticket_event_id ? 'Подробнее и билеты' : 'Подробнее';
+    node.append(link);
+  }
   messages.append(node);
 }
 
-async function sendMessage(text) {
+function addDateChoices(choices) {
+  if (!choices.length) return;
+  const group = document.createElement('div');
+  group.className = 'date-choices';
+  group.setAttribute('role', 'group');
+  group.setAttribute('aria-label', 'Даты показов');
+  choices.forEach((choice) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = choice.label;
+    button.addEventListener('click', () => sendMessage(choice.label, choice.source_key));
+    group.append(button);
+  });
+  messages.append(group);
+}
+
+async function sendMessage(text, performanceKey = null) {
+  if (input.disabled) return;
   addMessage(text, 'user');
   input.disabled = true;
+  messages.querySelectorAll('.date-choices button').forEach((button) => { button.disabled = true; });
   try {
     const response = await fetch('/api/chat', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({message: text, session_id: sessionId}),
+      body: JSON.stringify({message: text, session_id: sessionId, performance_key: performanceKey}),
     });
     if (!response.ok) throw new Error('request_failed');
     const data = await response.json();
@@ -59,10 +80,12 @@ async function sendMessage(text) {
     }
     addMessage(data.text, 'bot');
     data.cards.forEach(addCard);
+    addDateChoices(data.choices || []);
   } catch {
     addMessage('Не удалось получить ответ. Попробуйте ещё раз.', 'bot');
   } finally {
     input.disabled = false;
+    messages.querySelectorAll('.date-choices button').forEach((button) => { button.disabled = false; });
     input.focus();
     scrollToBottom();
   }
@@ -70,6 +93,7 @@ async function sendMessage(text) {
 
 form.addEventListener('submit', (event) => {
   event.preventDefault();
+  if (input.disabled) return;
   const text = input.value.trim();
   if (!text) return;
   input.value = '';

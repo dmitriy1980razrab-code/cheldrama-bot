@@ -23,6 +23,7 @@ def serialize_reply(reply: Reply) -> dict:
     return {
         "text": reply.text,
         "cards": [asdict(card) for card in reply.cards],
+        "choices": [asdict(choice) for choice in reply.choices],
     }
 
 
@@ -145,6 +146,13 @@ def create_handler(
             if len(message) > 1000:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"error": "message_too_long"})
                 return
+            performance_key = payload.get("performance_key")
+            if performance_key is not None and (
+                not isinstance(performance_key, str)
+                or not 1 <= len(performance_key) <= 128
+            ):
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid_performance_key"})
+                return
             supplied_session_id = payload.get("session_id")
             if supplied_session_id is not None and not valid_session_id(supplied_session_id):
                 self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid_session_id"})
@@ -167,6 +175,7 @@ def create_handler(
                     message.strip(),
                     history=history,
                     channel="site",
+                    performance_key=performance_key,
                 )
             except Exception as error:
                 record_error(logger, "http.chat", error)
@@ -178,7 +187,10 @@ def create_handler(
             finally:
                 if connection is not None:
                     connection.close()
-            conversation_store.add(session_id, message.strip(), reply.text)
+            context_text = (
+                reply.cards[0].title if performance_key and reply.cards else message.strip()
+            )
+            conversation_store.add(session_id, context_text, reply.text)
             response = serialize_reply(reply)
             response["session_id"] = session_id
             self._send_json(HTTPStatus.OK, response)

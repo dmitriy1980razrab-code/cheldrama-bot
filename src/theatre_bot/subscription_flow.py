@@ -48,6 +48,7 @@ class SubscriptionSession:
     state: FlowState = FlowState.OFFER
     performance_key: str | None = None
     selected_starts_at: str | None = None
+    interaction_id: str | None = None
 
 
 LEGAL_DOCUMENTS = (
@@ -121,6 +122,8 @@ def handle_subscription_action(
 ) -> tuple[SubscriptionSession, FlowReply]:
     if action == "legal":
         return session, legal_documents_reply()
+    if action in {"menu", "back"}:
+        return session, subscription_menu(connection, protector, session)
 
     if session.performance_key is not None:
         active = performance_subscription(

@@ -10,6 +10,7 @@ from theatre_bot.database import log_unrecognized_request
 from theatre_bot.templates import render_template
 from theatre_bot.queries import (
     Performance,
+    performance_by_key,
     between_dates,
     cast_for_play,
     artist_repertoire,
@@ -55,9 +56,16 @@ class Card:
 
 
 @dataclass(frozen=True)
+class PerformanceChoice:
+    source_key: str
+    label: str
+
+
+@dataclass(frozen=True)
 class Reply:
     text: str
     cards: tuple[Card, ...] = ()
+    choices: tuple[PerformanceChoice, ...] = ()
 
 
 def theatre_now() -> datetime:
@@ -238,14 +246,54 @@ def _site_subscription_hint(channel: str) -> str:
     )
 
 
+
+def _play_date_choices(items: list[Performance], title: str, empty: str) -> Reply:
+    if not items:
+        return Reply(empty)
+    first = items[0]
+    details = " · ".join(value for value in (first.genre, first.age_rating) if value)
+    choices = tuple(
+        PerformanceChoice(item.source_key, item.starts_at.strftime("%d.%m.%Y в %H:%M"))
+        for item in items if item.source_key
+    )
+    return Reply(
+        f"Выберите удобную дату спектакля «{title}»:",
+        (Card(title, "Ближайшие показы", details, "", None),),
+        choices,
+    )
+
+
+def selected_performance_reply(
+    connection: sqlite3.Connection,
+    source_key: str,
+    now: datetime | None = None,
+    channel: str = "local",
+) -> Reply:
+    current = now or theatre_now()
+    if current.tzinfo is not None:
+        current = current.astimezone(THEATRE_TIMEZONE).replace(tzinfo=None)
+    performance = performance_by_key(connection, source_key, current)
+    if performance is None:
+        return Reply("Этот показ уже недоступен. Запросите актуальные даты спектакля.")
+    return Reply(
+        "Выбранный показ:" + _site_subscription_hint(channel),
+        (_card(performance),),
+    )
+
+
 def answer(
     connection: sqlite3.Connection,
     text: str,
     now: datetime | None = None,
     history: tuple[str, ...] = (),
     channel: str = "local",
+    performance_key: str | None = None,
 ) -> Reply:
     current = now or theatre_now()
+    if current.tzinfo is not None:
+        current = current.astimezone(THEATRE_TIMEZONE).replace(tzinfo=None)
+    if performance_key is not None:
+        return selected_performance_reply(connection, performance_key, current, channel)
     intent = detect_intent(text).intent
     play = find_play_in_text(connection, text)
     artists = find_artists_in_text(connection, text)
@@ -297,11 +345,30 @@ def answer(
             return Reply(text=f"Сцена для ближайших показов «{play.title}» пока не указана.")
         return Reply(text=f"Спектакль «{play.title}» проходит: {', '.join(venues)}.")
 
+    if play is not None and intent in {
+        Intent.UNKNOWN, Intent.SCHEDULE_NEAREST, Intent.SCHEDULE_DATE,
+        Intent.SCHEDULE_WEEKDAY, Intent.TICKET,
+    }:
+        try:
+            requested = _requested_date(text, current.date()) or _weekday_date(text, current.date())
+        except ValueError:
+            return Reply("Проверьте дату: такого дня в календаре нет.")
+        if requested is not None:
+            items = [
+                item for item in between_dates(connection, requested, requested)
+                if item.play_url == play.source_url
+            ]
+            return _reply_for_performances(
+                items,
+                f"Показы спектакля «{play.title}» {requested:%d.%m.%Y}:"
+                + _site_subscription_hint(channel),
+                f"На {requested:%d.%m.%Y} показов спектакля «{play.title}» в афише нет.",
+            )
+
     if play is not None and intent == Intent.TICKET:
-        return _reply_for_performances(
+        return _play_date_choices(
             upcoming_for_play(connection, play.id, current, limit=3),
-            f"Выберите удобный показ спектакля «{play.title}». Актуальная стоимость и места доступны на официальной странице:"
-            + _site_subscription_hint(channel),
+            play.title,
             f"Ближайших показов спектакля «{play.title}» для покупки билетов пока нет.",
         )
 
@@ -315,10 +382,9 @@ def answer(
         return Reply(text=f"«{play.title}» — {play.age_rating}. Для зрителя {age} лет спектакль {phrase}.")
 
     if play is not None:
-        return _reply_for_performances(
+        return _play_date_choices(
             upcoming_for_play(connection, play.id, current, limit=3),
-            render_template(connection, "play", "upcoming", title=play.title)
-            + _site_subscription_hint(channel),
+            play.title,
             f"Ближайших показов спектакля «{play.title}» в афише нет.",
         )
 

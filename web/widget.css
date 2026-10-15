@@ -65,3 +65,13 @@ body { margin: 0; min-height: 100vh; background: var(--theatre-paper); color: va
 @media (prefers-reduced-motion: reduce) {
   .launcher { transition: none; }
 }
+
+.date-choices { display: grid; gap: 7px; margin: 0 0 12px; }
+.date-choices button {
+  padding: 10px 12px; border: 1px solid var(--theatre-blue-dark);
+  border-radius: 8px; background: var(--theatre-blue); color: var(--ink);
+  font: inherit; cursor: pointer;
+}
+.date-choices button:hover { background: var(--theatre-blue-light); }
+.date-choices button:focus-visible { outline: 3px solid var(--theatre-blue-dark); outline-offset: 2px; }
+.date-choices button:disabled { opacity: .6; cursor: wait; }

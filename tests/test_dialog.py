@@ -107,7 +107,7 @@ class DialogTests(unittest.TestCase):
         question = "\u041a\u043e\u0433\u0434\u0430 \u0431\u0443\u0434\u0435\u0442 " + title + "?"
         reply = answer(self.connection, question, datetime(2026, 9, 18, 12, 0))
         self.assertEqual([card.title for card in reply.cards], [title])
-        self.assertEqual(reply.cards[0].subtitle, "19.09.2026 \u0432 19:00")
+        self.assertEqual(reply.choices[0].label, "19.09.2026 \u0432 19:00")
 
     def test_king_lear_cast_question_still_returns_cast(self):
         title = self._rename_first_play_to_king_lear()
@@ -359,15 +359,19 @@ class DialogTests(unittest.TestCase):
         self.assertTrue(row["text"].startswith("fingerprint:"))
         self.assertNotIn(secret_text, row["text"])
 
-    def test_site_play_reply_offers_vk_or_max_notifications(self):
+    def test_site_selected_play_reply_offers_vk_or_max_notifications(self):
         reply = answer(
-            self.connection,
-            "Первый спектакль",
-            datetime(2026, 9, 18, 12, 0),
+            self.connection, "Первый спектакль", datetime(2026, 9, 18, 12, 0),
             channel="site",
         )
-        self.assertIn("VK или MAX", reply.text)
-        self.assertIn("за сутки", reply.text)
+        self.assertNotIn("VK или MAX", reply.text)
+        selected = answer(
+            self.connection, reply.choices[0].label,
+            datetime(2026, 9, 18, 12, 0), channel="site",
+            performance_key=reply.choices[0].source_key,
+        )
+        self.assertIn("VK или MAX", selected.text)
+        self.assertIn("за сутки", selected.text)
 
 
 if __name__ == "__main__":
