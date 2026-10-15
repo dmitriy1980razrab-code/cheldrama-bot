@@ -35,6 +35,9 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     topic_type TEXT NOT NULL CHECK (topic_type IN ('play', 'artist', 'genre', 'all_affiche')),
     topic_key TEXT NOT NULL,
     topic_label TEXT NOT NULL,
+    performance_key TEXT,
+    play_key TEXT,
+    selected_starts_at TEXT,
     notify_changes INTEGER NOT NULL DEFAULT 1,
     remind_24h INTEGER NOT NULL DEFAULT 1,
     status TEXT NOT NULL DEFAULT 'active'

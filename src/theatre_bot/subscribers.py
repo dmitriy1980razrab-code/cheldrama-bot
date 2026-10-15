@@ -114,6 +114,15 @@ def initialize_subscribers(connection: sqlite3.Connection) -> None:
         connection.execute(
             "ALTER TABLE subscribers ADD COLUMN display_name_encrypted BLOB"
         )
+    subscription_columns = {
+        row["name"]
+        for row in connection.execute("PRAGMA table_info(subscriptions)").fetchall()
+    }
+    for column in ("performance_key", "play_key", "selected_starts_at"):
+        if column not in subscription_columns:
+            connection.execute(
+                f"ALTER TABLE subscriptions ADD COLUMN {column} TEXT"
+            )
     queue_columns = {
         row["name"]
         for row in connection.execute("PRAGMA table_info(notification_queue)").fetchall()
@@ -276,7 +285,19 @@ def subscribe_to_play(
     play_key: str,
     play_title: str,
     at: datetime | None = None,
+    *,
+    performance_key: str | None = None,
+    selected_starts_at: str | None = None,
 ) -> int:
+    if performance_key is not None:
+        if not performance_key.strip() or not selected_starts_at:
+            raise ValueError("performance key and selected time are required")
+        datetime.fromisoformat(selected_starts_at)
+    elif selected_starts_at is not None:
+        raise ValueError("selected time requires a performance key")
+    topic_key = (
+        f"performance:{performance_key}" if performance_key is not None else play_key
+    )
     timestamp = _timestamp(at)
     with connection:
         subscriber_id = _get_or_create_subscriber(
@@ -301,17 +322,24 @@ def subscribe_to_play(
             """
             INSERT INTO subscriptions (
                 subscriber_id, topic_type, topic_key, topic_label,
-                notify_changes, remind_24h, status, subscribed_at, unsubscribed_at
-            ) VALUES (?, 'play', ?, ?, 1, 1, 'active', ?, NULL)
+                notify_changes, remind_24h, status, subscribed_at, unsubscribed_at,
+                performance_key, play_key, selected_starts_at
+            ) VALUES (?, 'play', ?, ?, 1, 1, 'active', ?, NULL, ?, ?, ?)
             ON CONFLICT(subscriber_id, topic_type, topic_key) DO UPDATE SET
                 topic_label = excluded.topic_label,
+                performance_key = excluded.performance_key,
+                play_key = excluded.play_key,
+                selected_starts_at = excluded.selected_starts_at,
                 notify_changes = 1,
                 remind_24h = 1,
                 status = 'active',
                 subscribed_at = excluded.subscribed_at,
                 unsubscribed_at = NULL
             """,
-            (subscriber_id, play_key, play_title, timestamp),
+            (
+                subscriber_id, topic_key, play_title, timestamp,
+                performance_key, play_key, selected_starts_at,
+            ),
         )
         connection.execute(
             """
@@ -331,7 +359,7 @@ def subscribe_to_play(
             SELECT id FROM subscriptions
             WHERE subscriber_id = ? AND topic_type = 'play' AND topic_key = ?
             """,
-            (subscriber_id, play_key),
+            (subscriber_id, topic_key),
         ).fetchone()
     return row["id"]
 
@@ -589,3 +617,54 @@ def list_active_subscriber_profiles(
             (admin_actor.strip(), purpose.strip(), _timestamp(at)),
         )
     return profiles
+
+
+def performance_subscription(
+    connection: sqlite3.Connection,
+    protector: IdentityProtector,
+    channel: str,
+    external_id: str,
+    performance_key: str,
+) -> sqlite3.Row | None:
+    return connection.execute(
+        """
+        SELECT sub.* FROM subscriptions sub
+        JOIN subscribers s ON s.id = sub.subscriber_id
+        WHERE s.channel = ? AND s.external_id_hash = ?
+          AND s.status = 'active' AND sub.status = 'active'
+          AND sub.topic_type = 'play' AND sub.performance_key = ?
+        """,
+        (channel, protector.lookup_hash(channel, external_id), performance_key),
+    ).fetchone()
+
+
+def unsubscribe_from_performance(
+    connection: sqlite3.Connection,
+    protector: IdentityProtector,
+    channel: str,
+    external_id: str,
+    performance_key: str,
+    at: datetime | None = None,
+) -> bool:
+    row = performance_subscription(
+        connection, protector, channel, external_id, performance_key
+    )
+    if row is None:
+        return False
+    with connection:
+        cursor = connection.execute(
+            """
+            UPDATE subscriptions
+            SET status = 'unsubscribed', unsubscribed_at = ?
+            WHERE id = ? AND status = 'active'
+            """,
+            (_timestamp(at), row["id"]),
+        )
+        connection.execute(
+            """
+            UPDATE notification_queue SET status = 'cancelled'
+            WHERE subscription_id = ? AND status IN ('pending', 'failed')
+            """,
+            (row["id"],),
+        )
+    return cursor.rowcount == 1

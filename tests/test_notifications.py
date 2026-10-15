@@ -252,5 +252,91 @@ class NotificationTests(unittest.TestCase):
         )
 
 
+    def select_single_performance(self):
+        self.subscribers.execute(
+            "UPDATE subscriptions SET status = 'unsubscribed'"
+        )
+        self.subscribers.commit()
+        subscribe_to_play(
+            self.subscribers, self.protector, "vk", "vk-1",
+            PLAY_URL, "Hamlet", self.now,
+            performance_key="kassy:event-1",
+            selected_starts_at="2026-10-03T19:00",
+        )
+        self.theatre.execute(
+            """
+            INSERT INTO performances (
+                play_id, starts_at, venue, ticket_event_id,
+                status, source_key, synced_at
+            )
+            SELECT play_id, starts_at, venue, 'event-2',
+                   status, 'kassy:event-2', synced_at
+            FROM performances WHERE source_key = 'kassy:event-1'
+            """
+        )
+        self.theatre.commit()
+
+    def test_selected_performance_gets_only_one_reminder(self):
+        self.select_single_performance()
+        report = build_service_notifications(
+            self.theatre, self.subscribers,
+            datetime(2026, 10, 2, 19, 0, tzinfo=THEATRE_TZ),
+        )
+        self.assertEqual(report.reminders, 1)
+        rows = self.subscribers.execute(
+            "SELECT performance_key FROM notification_queue"
+        ).fetchall()
+        self.assertEqual([row[0] for row in rows], ["kassy:event-1"])
+
+    def test_other_performance_change_does_not_notify_selected_subscriber(self):
+        self.select_single_performance()
+        build_service_notifications(self.theatre, self.subscribers, self.now)
+        self.theatre.execute(
+            """UPDATE performances SET starts_at = '2026-10-03T20:00'
+               WHERE source_key = 'kassy:event-2'"""
+        )
+        self.theatre.commit()
+        report = build_service_notifications(
+            self.theatre, self.subscribers, self.now
+        )
+        self.assertEqual(report.rescheduled, 0)
+        self.assertEqual(
+            self.subscribers.execute("SELECT count(*) FROM notification_queue").fetchone()[0],
+            0,
+        )
+        self.theatre.execute(
+            """UPDATE performances SET starts_at = '2026-10-03T21:00'
+               WHERE source_key = 'kassy:event-1'"""
+        )
+        self.theatre.commit()
+        report = build_service_notifications(
+            self.theatre, self.subscribers, self.now
+        )
+        self.assertEqual(report.rescheduled, 1)
+        row = self.subscribers.execute(
+            "SELECT performance_key FROM notification_queue"
+        ).fetchone()
+        self.assertEqual(row[0], "kassy:event-1")
+
+    def test_individual_unsubscribe_cancels_queued_reminder(self):
+        from theatre_bot.subscribers import unsubscribe_from_performance
+        self.select_single_performance()
+        build_service_notifications(
+            self.theatre, self.subscribers,
+            datetime(2026, 10, 2, 19, 0, tzinfo=THEATRE_TZ),
+        )
+        self.assertTrue(unsubscribe_from_performance(
+            self.subscribers, self.protector, "vk", "vk-1",
+            "kassy:event-1", self.now,
+        ))
+        self.assertEqual(
+            self.subscribers.execute("SELECT status FROM notification_queue").fetchone()[0],
+            "cancelled",
+        )
+        self.assertEqual(
+            pending_notifications(self.subscribers, self.protector), ()
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

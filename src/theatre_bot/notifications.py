@@ -74,6 +74,7 @@ def _active_subscriptions(
     connection: sqlite3.Connection,
     play_key: str,
     notification_flag: str,
+    performance_key: str | None = None,
 ) -> list[sqlite3.Row]:
     if notification_flag not in {"notify_changes", "remind_24h"}:
         raise ValueError("unknown notification flag")
@@ -82,7 +83,11 @@ def _active_subscriptions(
         SELECT sub.id AS subscription_id, sub.subscriber_id
         FROM subscriptions sub
         JOIN subscribers s ON s.id = sub.subscriber_id
-        WHERE sub.topic_type = 'play' AND sub.topic_key = ?
+        WHERE sub.topic_type = 'play'
+          AND (
+              (sub.performance_key IS NULL AND sub.topic_key = ?)
+              OR sub.performance_key = ?
+          )
           AND sub.status = 'active' AND sub.{notification_flag} = 1
           AND s.status = 'active'
           AND (
@@ -92,7 +97,7 @@ def _active_subscriptions(
               ORDER BY c.id DESC LIMIT 1
           ) = 'granted'
         """,
-        (play_key,),
+        (play_key, performance_key),
     ).fetchall()
 
 
@@ -156,7 +161,8 @@ def build_service_notifications(
                     f"стало {starts_at.strftime('%d.%m.%Y в %H:%M')}."
                 )
                 for subscription in _active_subscriptions(
-                    subscriber_connection, performance["play_key"], "notify_changes"
+                    subscriber_connection, performance["play_key"], "notify_changes",
+                    performance["source_key"],
                 ):
                     if _queue(
                         subscriber_connection, subscription["subscriber_id"],
@@ -176,7 +182,8 @@ def build_service_notifications(
                     "Уточните информацию у театра."
                 )
                 for subscription in _active_subscriptions(
-                    subscriber_connection, performance["play_key"], "notify_changes"
+                    subscriber_connection, performance["play_key"], "notify_changes",
+                    performance["source_key"],
                 ):
                     if _queue(
                         subscriber_connection, subscription["subscriber_id"],
@@ -192,7 +199,8 @@ def build_service_notifications(
                     f"{starts_at.strftime('%d.%m.%Y в %H:%M')}. Будем рады видеть Вас в театре!"
                 )
                 for subscription in _active_subscriptions(
-                    subscriber_connection, performance["play_key"], "remind_24h"
+                    subscriber_connection, performance["play_key"], "remind_24h",
+                    performance["source_key"],
                 ):
                     if _queue(
                         subscriber_connection, subscription["subscriber_id"],

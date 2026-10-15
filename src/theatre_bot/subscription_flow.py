@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from datetime import datetime
 from enum import Enum
 import sqlite3
 
 from theatre_bot.subscribers import (
     IdentityProtector,
+    performance_subscription,
+    unsubscribe_from_performance,
     available_subscription_actions,
     configure_play_notifications,
     record_consent,
@@ -43,6 +46,8 @@ class SubscriptionSession:
     play_key: str
     play_title: str
     state: FlowState = FlowState.OFFER
+    performance_key: str | None = None
+    selected_starts_at: str | None = None
 
 
 LEGAL_DOCUMENTS = (
@@ -59,6 +64,14 @@ DOCUMENT_VERSIONS = {
 }
 
 
+
+def _session_title(session: SubscriptionSession) -> str:
+    if not session.selected_starts_at:
+        return session.play_title
+    moment = datetime.fromisoformat(session.selected_starts_at)
+    return f"{session.play_title} ({moment:%d.%m.%Y %H:%M})"
+
+
 def legal_documents_reply() -> FlowReply:
     lines = ["Правовые документы:"] + [
         f"• {title}: {path}" for title, path in LEGAL_DOCUMENTS
@@ -71,12 +84,19 @@ def subscription_menu(
     protector: IdentityProtector,
     session: SubscriptionSession,
 ) -> FlowReply:
-    actions = available_subscription_actions(
-        connection, protector, session.channel, session.external_id
-    )
+    if session.performance_key is not None:
+        active = performance_subscription(
+            connection, protector, session.channel, session.external_id,
+            session.performance_key,
+        )
+        actions = ("configure", "unsubscribe") if active is not None else ("subscribe",)
+    else:
+        actions = available_subscription_actions(
+            connection, protector, session.channel, session.external_id
+        )
     if "unsubscribe" in actions:
         return FlowReply(
-            f"Вы подписаны на уведомления о спектакле «{session.play_title}».",
+            f"Вы подписаны на уведомления о спектакле «{_session_title(session)}».",
             (
                 FlowButton("configure", "Настроить уведомления"),
                 FlowButton("unsubscribe", "Отписаться"),
@@ -84,7 +104,7 @@ def subscription_menu(
             ),
         )
     return FlowReply(
-        f"Хотите получать сообщения о переносе или отмене спектакля «{session.play_title}» "
+        f"Хотите получать сообщения о переносе или отмене спектакля «{_session_title(session)}» "
         "и напоминание за сутки?",
         (
             FlowButton("subscribe", "Подписаться"),
@@ -101,6 +121,19 @@ def handle_subscription_action(
 ) -> tuple[SubscriptionSession, FlowReply]:
     if action == "legal":
         return session, legal_documents_reply()
+
+    if session.performance_key is not None:
+        active = performance_subscription(
+            connection, protector, session.channel, session.external_id,
+            session.performance_key,
+        )
+        if active is not None:
+            session = replace(session, state=FlowState.ACTIVE)
+        if action in {"configure", "notify_both", "notify_changes", "reminder_24h"}:
+            if active is None:
+                return session, subscription_menu(connection, protector, session)
+        if action == "subscribe" and active is not None:
+            return session, subscription_menu(connection, protector, session)
 
     if action == "subscribe" and session.state in {FlowState.OFFER, FlowState.CANCELLED}:
         updated = replace(session, state=FlowState.PERSONAL_DATA)
@@ -156,6 +189,8 @@ def handle_subscription_action(
         subscribe_to_play(
             connection, protector, session.channel, session.external_id,
             session.play_key, session.play_title,
+            performance_key=session.performance_key,
+            selected_starts_at=session.selected_starts_at,
         )
         updated = replace(session, state=FlowState.ACTIVE)
         marketing_text = (
@@ -163,7 +198,7 @@ def handle_subscription_action(
             if granted else "Рекламные сообщения отправляться не будут."
         )
         return updated, FlowReply(
-            f"Готово! Вы подписаны на «{session.play_title}»: сообщим о переносе "
+            f"Готово! Вы подписаны на «{_session_title(session)}»: сообщим о переносе "
             f"или отмене и напомним за сутки. {marketing_text}",
             (
                 FlowButton("configure", "Настроить"),
@@ -172,21 +207,27 @@ def handle_subscription_action(
         )
 
     if action == "unsubscribe":
-        changed = unsubscribe(
-            connection, protector, session.channel, session.external_id,
-            DOCUMENT_VERSIONS["service_notifications"], "channel_bot",
-        )
+        if session.performance_key is not None:
+            changed = unsubscribe_from_performance(
+                connection, protector, session.channel, session.external_id,
+                session.performance_key,
+            )
+        else:
+            changed = unsubscribe(
+                connection, protector, session.channel, session.external_id,
+                DOCUMENT_VERSIONS["service_notifications"], "channel_bot",
+            )
         if not changed:
             return session, subscription_menu(connection, protector, session)
         updated = replace(session, state=FlowState.CANCELLED)
         return updated, FlowReply(
-            "Подписка отключена. Сервисные и рекламные сообщения больше не будут приходить.",
+            ("\u041f\u043e\u0434\u043f\u0438\u0441\u043a\u0430 \u043d\u0430 \u044d\u0442\u043e\u0442 \u043f\u043e\u043a\u0430\u0437 \u043e\u0442\u043a\u043b\u044e\u0447\u0435\u043d\u0430." if session.performance_key is not None else "Подписка отключена. Сервисные и рекламные сообщения больше не будут приходить."),
             (FlowButton("subscribe", "Подписаться снова"),),
         )
 
     if action == "configure" and session.state == FlowState.ACTIVE:
         return session, FlowReply(
-            f"Какие уведомления о спектакле «{session.play_title}» Вы хотите получать?",
+            f"Какие уведомления о спектакле «{_session_title(session)}» Вы хотите получать?",
             (
                 FlowButton("notify_both", "Все уведомления"),
                 FlowButton("notify_changes", "Только перенос или отмена"),
@@ -204,7 +245,9 @@ def handle_subscription_action(
         changes, reminder, message = notification_options[action]
         changed = configure_play_notifications(
             connection, protector, session.channel, session.external_id,
-            session.play_key, changes, reminder,
+            (f"performance:{session.performance_key}"
+             if session.performance_key is not None else session.play_key),
+            changes, reminder,
         )
         if changed:
             return session, FlowReply(

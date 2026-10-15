@@ -51,6 +51,7 @@ class Card:
     details: str
     play_url: str
     ticket_event_id: str | None
+    source_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -218,6 +219,7 @@ def _card(performance: Performance) -> Card:
         details=details,
         play_url=performance.play_url,
         ticket_event_id=performance.ticket_event_id,
+        source_key=performance.source_key,
     )
 
 
@@ -337,7 +339,7 @@ def answer(
                 card = _card(performance)
                 role_text = f"Роль: {role}" if role else ""
                 details = " · ".join(value for value in (role_text, card.details) if value)
-                cards.append(Card(card.title, card.subtitle, details, card.play_url, card.ticket_event_id))
+                cards.append(Card(card.title, card.subtitle, details, card.play_url, card.ticket_event_id, card.source_key))
             return Reply(
                 text=render_template(connection, "artist", "upcoming", artist=artist.full_name),
                 cards=tuple(cards),

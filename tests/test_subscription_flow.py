@@ -121,5 +121,75 @@ class SubscriptionFlowTests(unittest.TestCase):
         self.assertIn("Согласие на рекламные сообщения", reply.text)
 
 
+    def complete_performance_flow(self, key, starts_at):
+        from dataclasses import replace
+        session = replace(
+            self.session,
+            performance_key=key,
+            selected_starts_at=starts_at,
+        )
+        for action in (
+            "subscribe", "accept_personal_data",
+            "accept_service", "decline_marketing",
+        ):
+            session, reply = handle_subscription_action(
+                self.connection, self.protector, session, action
+            )
+        return session, reply
+
+    def test_selected_date_is_saved_and_shown_in_confirmation(self):
+        session, reply = self.complete_performance_flow(
+            "kassy:first", "2026-11-01T18:00"
+        )
+        self.assertEqual(session.state, FlowState.ACTIVE)
+        self.assertIn("01.11.2026 18:00", reply.text)
+        row = self.connection.execute(
+            "SELECT performance_key, selected_starts_at, play_key FROM subscriptions"
+        ).fetchone()
+        self.assertEqual(
+            tuple(row), ("kassy:first", "2026-11-01T18:00", "hamlet")
+        )
+
+    def test_other_date_is_offered_its_own_subscription(self):
+        from dataclasses import replace
+        self.complete_performance_flow("kassy:first", "2026-11-01T18:00")
+        other = replace(
+            self.session,
+            performance_key="kassy:second",
+            selected_starts_at="2026-11-02T19:00",
+        )
+        menu = subscription_menu(self.connection, self.protector, other)
+        self.assertIn("subscribe", self.action_names(menu))
+        self.assertNotIn("unsubscribe", self.action_names(menu))
+
+    def test_reopened_performance_can_be_configured_and_unsubscribed_individually(self):
+        from dataclasses import replace
+        first, _ = self.complete_performance_flow(
+            "kassy:first", "2026-11-01T18:00"
+        )
+        self.complete_performance_flow("kassy:second", "2026-11-02T19:00")
+        reopened = replace(first, state=FlowState.OFFER)
+        reopened, _ = handle_subscription_action(
+            self.connection, self.protector, reopened, "notify_changes"
+        )
+        rows = self.connection.execute(
+            "SELECT performance_key, remind_24h FROM subscriptions ORDER BY id"
+        ).fetchall()
+        self.assertEqual(
+            [tuple(row) for row in rows],
+            [("kassy:first", 0), ("kassy:second", 1)],
+        )
+        reopened, _ = handle_subscription_action(
+            self.connection, self.protector, reopened, "unsubscribe"
+        )
+        rows = self.connection.execute(
+            "SELECT performance_key, status FROM subscriptions ORDER BY id"
+        ).fetchall()
+        self.assertEqual(
+            [tuple(row) for row in rows],
+            [("kassy:first", "unsubscribed"), ("kassy:second", "active")],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

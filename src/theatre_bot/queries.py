@@ -16,6 +16,7 @@ class Performance:
     age_rating: str | None
     play_url: str
     ticket_event_id: str | None
+    source_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -107,7 +108,7 @@ def upcoming_for_play(
     rows = connection.execute(
         """
         SELECT p.title, p.genre, p.age_rating, p.source_url AS play_url,
-               e.starts_at, e.venue, e.ticket_event_id
+               e.starts_at, e.venue, e.ticket_event_id, e.source_key
         FROM performances e
         JOIN plays p ON p.id = e.play_id
         WHERE p.id = ? AND e.status = 'scheduled' AND e.starts_at >= ?
@@ -146,7 +147,7 @@ def upcoming_by_age(
     rows = connection.execute(
         """
         SELECT p.title, p.genre, p.age_rating, p.source_url AS play_url,
-               e.starts_at, e.venue, e.ticket_event_id
+               e.starts_at, e.venue, e.ticket_event_id, e.source_key
         FROM performances e
         JOIN plays p ON p.id = e.play_id
         WHERE e.status = 'scheduled' AND e.starts_at >= ?
@@ -169,7 +170,7 @@ def upcoming_for_catalog_kind(
     rows = connection.execute(
         """
         SELECT p.title, p.genre, p.age_rating, p.source_url AS play_url,
-               e.starts_at, e.venue, e.ticket_event_id
+               e.starts_at, e.venue, e.ticket_event_id, e.source_key
         FROM performances e
         JOIN plays p ON p.id = e.play_id
         WHERE e.status = 'scheduled' AND e.starts_at >= ?
@@ -251,7 +252,7 @@ def upcoming_for_artist(
     rows = connection.execute(
         """
         SELECT DISTINCT p.title, p.genre, p.age_rating, p.source_url AS play_url,
-               e.starts_at, e.venue, e.ticket_event_id, r.role_name
+               e.starts_at, e.venue, e.ticket_event_id, e.source_key, r.role_name
         FROM roles r
         JOIN plays p ON p.id = r.play_id
         JOIN performances e ON e.play_id = p.id
@@ -272,6 +273,7 @@ def upcoming_for_artist(
             age_rating=row["age_rating"],
             play_url=row["play_url"],
             ticket_event_id=row["ticket_event_id"],
+            source_key=row["source_key"],
         )
         result.append((performance, row["role_name"]))
     return result
@@ -308,7 +310,7 @@ def new_year_performances(
     rows = connection.execute(
         """
         SELECT p.title, p.genre, p.age_rating, p.source_url AS play_url,
-               e.starts_at, e.venue, e.ticket_event_id
+               e.starts_at, e.venue, e.ticket_event_id, e.source_key
         FROM performances e
         JOIN plays p ON p.id = e.play_id
         WHERE e.status = 'scheduled' AND e.starts_at >= ? AND e.starts_at < ?
@@ -333,6 +335,7 @@ def _rows_to_performances(rows: list[sqlite3.Row]) -> list[Performance]:
             age_rating=row["age_rating"],
             play_url=row["play_url"],
             ticket_event_id=row["ticket_event_id"],
+            source_key=row["source_key"],
         )
         for row in rows
     ]
@@ -346,7 +349,7 @@ def nearest(
     rows = connection.execute(
         """
         SELECT p.title, p.genre, p.age_rating, p.source_url AS play_url,
-               e.starts_at, e.venue, e.ticket_event_id
+               e.starts_at, e.venue, e.ticket_event_id, e.source_key
         FROM performances e
         JOIN plays p ON p.id = e.play_id
         WHERE e.status = 'scheduled' AND e.starts_at >= ?
@@ -368,7 +371,7 @@ def between_dates(
     rows = connection.execute(
         """
         SELECT p.title, p.genre, p.age_rating, p.source_url AS play_url,
-               e.starts_at, e.venue, e.ticket_event_id
+               e.starts_at, e.venue, e.ticket_event_id, e.source_key
         FROM performances e
         JOIN plays p ON p.id = e.play_id
         WHERE e.status = 'scheduled' AND e.starts_at >= ? AND e.starts_at < ?
@@ -377,3 +380,23 @@ def between_dates(
         (start.isoformat(timespec="minutes"), end.isoformat(timespec="minutes")),
     ).fetchall()
     return _rows_to_performances(rows)
+
+
+def performance_by_key(
+    connection: sqlite3.Connection,
+    source_key: str,
+    from_time: datetime,
+) -> Performance | None:
+    rows = connection.execute(
+        """
+        SELECT p.title, p.genre, p.age_rating, p.source_url AS play_url,
+               e.starts_at, e.venue, e.ticket_event_id, e.source_key
+        FROM performances e
+        JOIN plays p ON p.id = e.play_id
+        WHERE e.source_key = ? AND e.status = 'scheduled'
+          AND p.is_active = 1 AND e.starts_at >= ?
+        """,
+        (source_key, from_time.isoformat(timespec="minutes")),
+    ).fetchall()
+    items = _rows_to_performances(rows)
+    return items[0] if items else None
