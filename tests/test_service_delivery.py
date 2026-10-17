@@ -175,11 +175,37 @@ class ServiceDeliveryTests(unittest.TestCase):
         )
         self.assertEqual((report.cancelled, len(transport.requests)), (1, 0))
 
+    def test_ambiguous_max_failure_is_not_retried(self):
+        queue_service_notifications(self.subscribers, self.protector, now=self.delivery_time)
+        sender, transport = self._sender(503)
+        for offset in (0, 5, 15):
+            deliver_persistent_replies(self.subscribers, self.protector, sender,
+                                       now=self.delivery_time + timedelta(minutes=offset))
+        self.assertEqual(len(transport.requests), 1)
+        row = self.subscribers.execute(
+            "SELECT status, failure_reason FROM notification_queue"
+        ).fetchone()
+        self.assertEqual(tuple(row), ("failed", "delivery_uncertain"))
+
+    def test_expired_max_service_lease_stops_before_network_send(self):
+        from theatre_bot.persistent_replies import claim_replies
+        queue_service_notifications(self.subscribers, self.protector, now=self.delivery_time)
+        self.assertEqual(len(claim_replies(self.subscribers, self.protector,
+                                          now=self.delivery_time)), 1)
+        sender, transport = self._sender()
+        deliver_persistent_replies(self.subscribers, self.protector, sender,
+                                   now=self.delivery_time + timedelta(minutes=6))
+        self.assertEqual(len(transport.requests), 0)
+        row = self.subscribers.execute(
+            "SELECT status, failure_reason FROM notification_queue"
+        ).fetchone()
+        self.assertEqual(tuple(row), ("failed", "delivery_uncertain"))
+
     def test_three_delivery_failures_mark_source_failed(self):
         queue_service_notifications(
             self.subscribers, self.protector, now=self.delivery_time
         )
-        sender, _ = self._sender(503)
+        sender, _ = self._sender(429)
         for offset in (0, 5, 15):
             deliver_persistent_replies(
                 self.subscribers,

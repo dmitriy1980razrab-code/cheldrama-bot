@@ -180,6 +180,16 @@ def initialize_subscribers(connection: sqlite3.Connection) -> None:
                 ON outgoing_reply_queue(status, next_attempt_at, locked_until, id);
             """
         )
+    outgoing_columns = {
+        row["name"]
+        for row in connection.execute("PRAGMA table_info(outgoing_reply_queue)")
+    }
+    if "vk_random_id" not in outgoing_columns:
+        connection.execute("ALTER TABLE outgoing_reply_queue ADD COLUMN vk_random_id INTEGER")
+    connection.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_outgoing_reply_queue_vk_random_id "
+        "ON outgoing_reply_queue(vk_random_id)"
+    )
     connection.commit()
 
 

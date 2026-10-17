@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from contextlib import contextmanager
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 import json
+import secrets
 from pathlib import Path
 import sqlite3
 from typing import Callable, Protocol
 
 from theatre_bot.channels import OutgoingButton, OutgoingMessage
+from theatre_bot.outgoing_delivery import DeliveryError
 from theatre_bot.dialog import Card, PerformanceChoice, Reply
 from theatre_bot.subscribers import (
     IdentityProtector,
@@ -34,6 +37,35 @@ class PersistentDeliveryReport:
 class ReplySender(Protocol):
     def send(self, message: OutgoingMessage) -> None:
         """Передать ответ адаптеру канала."""
+
+
+
+@contextmanager
+def _transaction(connection: sqlite3.Connection):
+    # Start explicitly: Connection.__enter__ alone does not begin a transaction.
+    if connection.in_transaction:
+        yield
+        return
+    connection.execute("BEGIN")
+    try:
+        yield
+    except BaseException:
+        connection.rollback()
+        raise
+    else:
+        connection.commit()
+
+
+def _allocate_vk_random_id(connection: sqlite3.Connection) -> int:
+    # Called while holding BEGIN IMMEDIATE. IDs in retained queue rows never collide.
+    for _ in range(100):
+        value = secrets.randbelow(2_147_483_647) + 1
+        exists = connection.execute(
+            "SELECT 1 FROM outgoing_reply_queue WHERE vk_random_id = ?", (value,)
+        ).fetchone()
+        if exists is None:
+            return value
+    raise RuntimeError("cannot allocate a unique VK delivery identifier")
 
 
 def _timestamp(moment: datetime | None = None) -> str:
@@ -90,7 +122,7 @@ def enqueue_reply(
         message.channel, f"outgoing-reply:{dedupe_key}"
     )
     encrypted = protector.encrypt(_serialize(message).decode("utf-8"))
-    with connection:
+    with _transaction(connection):
         cursor = connection.execute(
             """
             INSERT OR IGNORE INTO outgoing_reply_queue (
@@ -121,11 +153,25 @@ def claim_replies(
     locked_until = _timestamp(moment + lease)
     connection.execute("BEGIN IMMEDIATE")
     try:
-        rows = connection.execute(
+        uncertain = connection.execute(
             """
             SELECT id, payload_encrypted, source_type, source_key
             FROM outgoing_reply_queue
-            WHERE attempt_count < ? AND (
+            WHERE channel = 'max' AND status = 'processing' AND locked_until <= ?
+              AND source_type IN ('service_notification', 'campaign')
+            """, (current,),
+        ).fetchall()
+        for row in uncertain:
+            stored = StoredReply(row["id"], _deserialize(
+                protector.decrypt(row["payload_encrypted"]).encode("utf-8")
+            ), row["source_type"], row["source_key"])
+            _mark_uncertain(connection, stored, at=moment)
+        rows = connection.execute(
+            """
+            SELECT id, channel, vk_random_id, payload_encrypted, source_type, source_key
+            FROM outgoing_reply_queue
+            WHERE attempt_count < ?
+              AND COALESCE(failure_reason, '') != 'delivery_uncertain' AND (
                 (status IN ('pending', 'failed')
                  AND (next_attempt_at IS NULL OR next_attempt_at <= ?))
                 OR (status = 'processing' AND locked_until <= ?)
@@ -134,7 +180,16 @@ def claim_replies(
             """,
             (max(1, max_attempts), current, current, max(1, min(limit, 1000))),
         ).fetchall()
+        random_ids = {}
         for row in rows:
+            random_id = row["vk_random_id"]
+            if row["channel"] == "vk" and random_id is None:
+                random_id = _allocate_vk_random_id(connection)
+                connection.execute(
+                    "UPDATE outgoing_reply_queue SET vk_random_id = ? WHERE id = ?",
+                    (random_id, row["id"]),
+                )
+            random_ids[row["id"]] = random_id
             connection.execute(
                 """
                 UPDATE outgoing_reply_queue
@@ -150,7 +205,10 @@ def claim_replies(
     return tuple(
         StoredReply(
             row["id"],
-            _deserialize(protector.decrypt(row["payload_encrypted"]).encode("utf-8")),
+            replace(
+                _deserialize(protector.decrypt(row["payload_encrypted"]).encode("utf-8")),
+                vk_random_id=random_ids[row["id"]],
+            ),
             row["source_type"],
             row["source_key"],
         )
@@ -169,7 +227,7 @@ def mark_reply_result(
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=timezone.utc)
     timestamp = _timestamp(moment)
-    with connection:
+    with _transaction(connection):
         row = connection.execute(
             "SELECT attempt_count FROM outgoing_reply_queue WHERE id = ?",
             (queue_id,),
@@ -208,6 +266,31 @@ def mark_reply_result(
             )
 
 
+def _critical_max(stored: StoredReply) -> bool:
+    return stored.message.channel == "max" and stored.source_type in {
+        "service_notification", "campaign",
+    }
+
+
+def _mark_uncertain(
+    connection: sqlite3.Connection,
+    stored: StoredReply,
+    at: datetime | None = None,
+) -> None:
+    # No automatic retry: acceptance could have happened before the crash/timeout.
+    with _transaction(connection):
+        connection.execute(
+            """
+            UPDATE outgoing_reply_queue
+            SET status = 'failed', attempt_count = MAX(attempt_count, 3),
+                failure_reason = 'delivery_uncertain', locked_until = NULL,
+                last_attempt_at = ?, next_attempt_at = NULL
+            WHERE id = ? AND status = 'processing'
+            """, (_timestamp(at), stored.queue_id),
+        )
+        _mark_source_result(connection, stored, False, "delivery_uncertain", at=at)
+
+
 def deliver_persistent_replies(
     connection: sqlite3.Connection,
     protector: IdentityProtector,
@@ -220,30 +303,32 @@ def deliver_persistent_replies(
     cancelled = 0
     for stored in claim_replies(connection, protector, limit=limit, now=now):
         if not _source_allows_delivery(connection, stored):
-            _cancel_reply(connection, stored, at=now)
+            with _transaction(connection):
+                _cancel_reply(connection, stored, at=now)
             cancelled += 1
             continue
         try:
             sender.send(stored.message)
         except Exception as error:
-            mark_reply_result(
-                connection,
-                stored.queue_id,
-                False,
-                failure_reason=type(error).__name__,
-                at=now,
+            ambiguous = _critical_max(stored) and (
+                not isinstance(error, DeliveryError) or error.status >= 500
             )
-            _mark_source_result(
-                connection,
-                stored,
-                False,
-                type(error).__name__,
-                at=now,
-            )
+            if ambiguous:
+                _mark_uncertain(connection, stored, at=now)
+            else:
+                with _transaction(connection):
+                    mark_reply_result(
+                        connection, stored.queue_id, False,
+                        failure_reason=type(error).__name__, at=now,
+                    )
+                    _mark_source_result(
+                        connection, stored, False, type(error).__name__, at=now,
+                    )
             failed += 1
         else:
-            mark_reply_result(connection, stored.queue_id, True, at=now)
-            _mark_source_result(connection, stored, True, None, at=now)
+            with _transaction(connection):
+                mark_reply_result(connection, stored.queue_id, True, at=now)
+                _mark_source_result(connection, stored, True, None, at=now)
             sent += 1
     return PersistentDeliveryReport(sent, failed, cancelled)
 
@@ -304,7 +389,7 @@ def _cancel_reply(
     stored: StoredReply,
     at: datetime | None = None,
 ) -> None:
-    with connection:
+    with _transaction(connection):
         connection.execute(
             """
             UPDATE outgoing_reply_queue
@@ -348,7 +433,7 @@ def _mark_source_result(
             return
         recipient_id = int(stored.source_key)
         if success:
-            with connection:
+            with _transaction(connection):
                 connection.execute(
                     """
                     UPDATE campaign_recipients
@@ -363,7 +448,7 @@ def _mark_source_result(
                 (stored.queue_id,),
             ).fetchone()
             if outgoing and outgoing["attempt_count"] >= 3:
-                with connection:
+                with _transaction(connection):
                     connection.execute(
                         """
                         UPDATE campaign_recipients
@@ -379,7 +464,7 @@ def _mark_source_result(
     if not stored.source_key.isdigit():
         return
     if success:
-        with connection:
+        with _transaction(connection):
             connection.execute(
                 """
                 UPDATE notification_queue
@@ -394,11 +479,12 @@ def _mark_source_result(
         (stored.queue_id,),
     ).fetchone()
     if outgoing and outgoing["attempt_count"] >= 3:
-        with connection:
+        with _transaction(connection):
             connection.execute(
                 """
                 UPDATE notification_queue
-                SET status = 'failed', failure_reason = ?
+                SET status = 'failed', failure_reason = ?,
+                    attempt_count = MAX(attempt_count, 3)
                 WHERE id = ? AND status IN ('pending', 'failed')
                 """,
                 ((failure_reason or "delivery_failed")[:120], int(stored.source_key)),
@@ -425,7 +511,7 @@ def _finalize_campaign_for_recipient(
         (row["campaign_id"],),
     ).fetchone()[0]
     if planned == 0:
-        with connection:
+        with _transaction(connection):
             connection.execute(
                 """
                 UPDATE campaigns SET status = 'completed'

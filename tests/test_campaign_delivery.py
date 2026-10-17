@@ -178,11 +178,25 @@ class CampaignDeliveryTests(unittest.TestCase):
             "SELECT count(*) FROM outgoing_reply_queue"
         ).fetchone()[0], 1)
 
+    def test_ambiguous_max_campaign_is_not_retried(self):
+        self.add_subscriber()
+        self.scheduled_campaign()
+        queue_due_campaigns(self.connection, self.protector, now=self.due)
+        sender, transport = self.sender(503)
+        for offset in (0, 5, 15):
+            deliver_persistent_replies(self.connection, self.protector, sender,
+                                       now=self.due + timedelta(minutes=offset))
+        self.assertEqual(len(transport.requests), 1)
+        row = self.connection.execute(
+            "SELECT status, reason FROM campaign_recipients"
+        ).fetchone()
+        self.assertEqual(tuple(row), ("failed", "delivery_uncertain"))
+
     def test_three_failures_finish_recipient_with_safe_reason(self):
         self.add_subscriber()
         campaign_id = self.scheduled_campaign()
         queue_due_campaigns(self.connection, self.protector, now=self.due)
-        sender, _ = self.sender(503)
+        sender, _ = self.sender(429)
         for offset in (0, 5, 15):
             deliver_persistent_replies(
                 self.connection,

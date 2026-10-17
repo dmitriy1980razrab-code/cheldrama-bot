@@ -165,11 +165,16 @@ class VkApiSender:
     def send(self, message: OutgoingMessage) -> None:
         if message.channel != "vk":
             raise ValueError("VK sender accepts only VK messages")
+        random_id = message.vk_random_id
+        if random_id is None:
+            random_id = self._random_id()
+        if type(random_id) is not int or not 1 <= random_id <= 2_147_483_647:
+            raise ValueError("VK random_id must be a positive 32-bit integer")
         fields = {
             "access_token": self._token,
             "v": self._api_version,
             "peer_id": message.external_user_id,
-            "random_id": str(self._random_id()),
+            "random_id": str(random_id),
             "message": _message_text(message),
         }
         keyboard = _vk_keyboard(message)

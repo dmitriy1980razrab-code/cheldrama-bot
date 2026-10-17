@@ -22,6 +22,7 @@ class OutgoingMessage:
     external_user_id: str
     reply: Reply
     buttons: tuple["OutgoingButton", ...] = ()
+    vk_random_id: int | None = None
 
 
 @dataclass(frozen=True)

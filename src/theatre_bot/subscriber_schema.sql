@@ -159,6 +159,7 @@ CREATE TABLE IF NOT EXISTS outgoing_reply_queue (
     id INTEGER PRIMARY KEY,
     channel TEXT NOT NULL CHECK (channel IN ('vk', 'max')),
     dedupe_hash TEXT NOT NULL UNIQUE,
+    vk_random_id INTEGER,
     payload_encrypted BLOB NOT NULL,
     source_type TEXT NOT NULL DEFAULT 'webhook'
         CHECK (source_type IN ('webhook', 'service_notification', 'campaign')),
