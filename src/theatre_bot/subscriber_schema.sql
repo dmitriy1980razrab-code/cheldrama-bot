@@ -130,6 +130,8 @@ CREATE TABLE IF NOT EXISTS notification_queue (
     subscriber_id INTEGER NOT NULL REFERENCES subscribers(id),
     subscription_id INTEGER NOT NULL REFERENCES subscriptions(id),
     performance_key TEXT NOT NULL,
+    planned_starts_at TEXT,
+    deliver_after TEXT,
     notification_type TEXT NOT NULL
         CHECK (notification_type IN ('rescheduled', 'removed', 'reminder_24h')),
     message TEXT NOT NULL,
@@ -177,3 +179,11 @@ CREATE TABLE IF NOT EXISTS outgoing_reply_queue (
 
 CREATE INDEX IF NOT EXISTS idx_outgoing_reply_queue_delivery
     ON outgoing_reply_queue(status, next_attempt_at, locked_until, id);
+
+CREATE TABLE IF NOT EXISTS notification_checks (
+    performance_key TEXT NOT NULL,
+    starts_at TEXT NOT NULL,
+    stage TEXT NOT NULL CHECK (stage IN ('evening', 'morning', 'three_hours', 'prepare')),
+    checked_at TEXT NOT NULL,
+    PRIMARY KEY (performance_key, starts_at, stage)
+);

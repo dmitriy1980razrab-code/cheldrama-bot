@@ -128,6 +128,8 @@ def initialize_subscribers(connection: sqlite3.Connection) -> None:
         for row in connection.execute("PRAGMA table_info(notification_queue)").fetchall()
     }
     queue_migrations = {
+        "planned_starts_at": "TEXT",
+        "deliver_after": "TEXT",
         "attempt_count": "INTEGER NOT NULL DEFAULT 0",
         "last_attempt_at": "TEXT",
         "next_attempt_at": "TEXT",

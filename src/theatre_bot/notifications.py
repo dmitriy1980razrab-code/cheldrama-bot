@@ -26,6 +26,7 @@ class PendingNotification:
     external_id: str
     notification_type: str
     message: str
+    deliver_after: str | None = None
 
 
 @dataclass(frozen=True)
@@ -109,17 +110,19 @@ def _queue(
     notification_type: str,
     message: str,
     created_at: str,
+    planned_starts_at: str | None = None,
+    deliver_after: str | None = None,
 ) -> bool:
     cursor = connection.execute(
         """
         INSERT OR IGNORE INTO notification_queue (
             subscriber_id, subscription_id, performance_key,
-            notification_type, message, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?)
+            notification_type, message, created_at, planned_starts_at, deliver_after
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             subscriber_id, subscription_id, performance_key,
-            notification_type, message, created_at,
+            notification_type, message, created_at, planned_starts_at, deliver_after,
         ),
     )
     return cursor.rowcount == 1
@@ -129,6 +132,11 @@ def build_service_notifications(
     theatre_connection: sqlite3.Connection,
     subscriber_connection: sqlite3.Connection,
     now: datetime | None = None,
+    *,
+    performance_keys: set[str] | None = None,
+    include_changes: bool = True,
+    include_reminders: bool = True,
+    prepare_reminders: bool = False,
 ) -> NotificationBuildReport:
     current = now or datetime.now(THEATRE_TIMEZONE)
     if current.tzinfo is None:
@@ -147,13 +155,15 @@ def build_service_notifications(
     ).fetchall()
     with subscriber_connection:
         for performance in performances:
+            if performance_keys is not None and performance["source_key"] not in performance_keys:
+                continue
             observation = subscriber_connection.execute(
                 "SELECT * FROM performance_observations WHERE source_key = ?",
                 (performance["source_key"],),
             ).fetchone()
             starts_at = _local_datetime(performance["starts_at"])
 
-            if observation and observation["starts_at"] != performance["starts_at"]:
+            if include_changes and observation and observation["starts_at"] != performance["starts_at"]:
                 old_time = _local_datetime(observation["starts_at"])
                 message = (
                     f"Время спектакля «{performance['play_title']}» изменилось: "
@@ -172,7 +182,7 @@ def build_service_notifications(
                         counts["rescheduled"] += 1
 
             if (
-                observation
+                include_changes and observation
                 and observation["status"] == "scheduled"
                 and performance["status"] == "removed"
             ):
@@ -193,7 +203,8 @@ def build_service_notifications(
                         counts["removed"] += 1
 
             delta = starts_at - current
-            if performance["status"] == "scheduled" and timedelta(hours=23, minutes=30) <= delta <= timedelta(hours=24, minutes=30):
+            upper = timedelta(hours=26) if prepare_reminders else timedelta(hours=24, minutes=30)
+            if include_reminders and performance["status"] == "scheduled" and timedelta(hours=23, minutes=30) <= delta <= upper:
                 message = (
                     f"Напоминаем: спектакль «{performance['play_title']}» состоится завтра, "
                     f"{starts_at.strftime('%d.%m.%Y в %H:%M')}. Будем рады видеть Вас в театре!"
@@ -206,9 +217,13 @@ def build_service_notifications(
                         subscriber_connection, subscription["subscriber_id"],
                         subscription["subscription_id"], performance["source_key"],
                         "reminder_24h", message, created_at,
+                        planned_starts_at=performance["starts_at"],
+                        deliver_after=_timestamp(starts_at - timedelta(hours=24)) if prepare_reminders else None,
                     ):
                         counts["reminder_24h"] += 1
 
+            if not include_changes and observation is not None:
+                continue
             subscriber_connection.execute(
                 """
                 INSERT INTO performance_observations (
@@ -238,17 +253,23 @@ def pending_notifications(
     limit: int = 100,
     now: datetime | None = None,
     max_attempts: int = 3,
+    *, include_future: bool = False, unqueued_only: bool = False,
 ) -> tuple[PendingNotification, ...]:
     current = _timestamp(now or datetime.now(timezone.utc))
     rows = connection.execute(
         """
-        SELECT q.id, q.notification_type, q.message,
+        SELECT q.id, q.notification_type, q.message, q.deliver_after,
                s.channel, s.external_id_encrypted
         FROM notification_queue q
         JOIN subscribers s ON s.id = q.subscriber_id
         JOIN subscriptions sub ON sub.id = q.subscription_id
         WHERE q.status IN ('pending', 'failed')
           AND q.attempt_count < ?
+          AND (? = 1 OR q.deliver_after IS NULL OR q.deliver_after <= ?)
+          AND (? = 0 OR NOT EXISTS (
+              SELECT 1 FROM outgoing_reply_queue o
+              WHERE o.source_type = 'service_notification' AND o.source_key = CAST(q.id AS TEXT)
+          ))
           AND (q.next_attempt_at IS NULL OR q.next_attempt_at <= ?)
           AND s.status = 'active'
           AND sub.status = 'active'
@@ -261,13 +282,13 @@ def pending_notifications(
           ) = 'granted'
         ORDER BY q.id LIMIT ?
         """,
-        (max(1, max_attempts), current, max(1, min(limit, 1000))),
+        (max(1, max_attempts), int(include_future), current, int(unqueued_only), current, max(1, min(limit, 1000))),
     ).fetchall()
     return tuple(
         PendingNotification(
             row["id"], row["channel"],
             protector.decrypt(row["external_id_encrypted"]),
-            row["notification_type"], row["message"],
+            row["notification_type"], row["message"], row["deliver_after"],
         )
         for row in rows
     )

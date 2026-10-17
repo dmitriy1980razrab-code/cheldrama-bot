@@ -1,0 +1,11 @@
+[Unit]
+Description=Check Cheldrama notification milestones every fifteen minutes
+
+[Timer]
+OnCalendar=*-*-* *:00/15:00 UTC
+Persistent=true
+AccuracySec=5s
+Unit=cheldrama-notifications.service
+
+[Install]
+WantedBy=timers.target

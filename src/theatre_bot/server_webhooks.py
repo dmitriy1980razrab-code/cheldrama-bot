@@ -158,6 +158,7 @@ def build_webhook_services_from_environment(
         subscriber_database_path,
         protector,
         sender,
+        theatre_database_path=theatre_database_path,
     )
     runtime = WebhookRuntime(
         vk_adapter,

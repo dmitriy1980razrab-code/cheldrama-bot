@@ -113,6 +113,7 @@ def enqueue_reply(
     at: datetime | None = None,
     source_type: str = "webhook",
     source_key: str | None = None,
+    available_at: datetime | None = None,
 ) -> bool:
     if message.channel not in {"vk", "max"} or not dedupe_key:
         raise ValueError("valid channel and dedupe key are required")
@@ -127,12 +128,13 @@ def enqueue_reply(
             """
             INSERT OR IGNORE INTO outgoing_reply_queue (
                 channel, dedupe_hash, payload_encrypted,
-                source_type, source_key, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?)
+                source_type, source_key, created_at, next_attempt_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 message.channel, dedupe_hash, encrypted,
                 source_type, source_key, _timestamp(at),
+                _timestamp(available_at) if available_at is not None else None,
             ),
         )
     return cursor.rowcount == 1
@@ -297,12 +299,13 @@ def deliver_persistent_replies(
     sender: ReplySender,
     limit: int = 100,
     now: datetime | None = None,
+    *, theatre_connection: sqlite3.Connection | None = None,
 ) -> PersistentDeliveryReport:
     sent = 0
     failed = 0
     cancelled = 0
     for stored in claim_replies(connection, protector, limit=limit, now=now):
-        if not _source_allows_delivery(connection, stored):
+        if not _source_allows_delivery(connection, stored, theatre_connection=theatre_connection, now=now):
             with _transaction(connection):
                 _cancel_reply(connection, stored, at=now)
             cancelled += 1
@@ -336,6 +339,8 @@ def deliver_persistent_replies(
 def _source_allows_delivery(
     connection: sqlite3.Connection,
     stored: StoredReply,
+    *, theatre_connection: sqlite3.Connection | None = None,
+    now: datetime | None = None,
 ) -> bool:
     if stored.source_type == "campaign":
         if not stored.source_key or not stored.source_key.isdigit():
@@ -365,13 +370,14 @@ def _source_allows_delivery(
         return False
     row = connection.execute(
         """
-        SELECT q.id
+        SELECT q.id, q.notification_type, q.planned_starts_at, q.performance_key
         FROM notification_queue q
         JOIN subscribers s ON s.id = q.subscriber_id
         JOIN subscriptions sub ON sub.id = q.subscription_id
         WHERE q.id = ? AND q.status IN ('pending', 'failed')
           AND s.status = 'active' AND sub.status = 'active'
           AND s.external_id_encrypted IS NOT NULL
+          AND CASE WHEN q.notification_type = 'reminder_24h' THEN sub.remind_24h ELSE sub.notify_changes END = 1
           AND (
               SELECT action FROM consent_events c
               WHERE c.subscriber_id = s.id
@@ -381,7 +387,22 @@ def _source_allows_delivery(
         """,
         (int(stored.source_key),),
     ).fetchone()
-    return row is not None
+    if row is None:
+        return False
+    if row["notification_type"] == "reminder_24h" and row["planned_starts_at"] and theatre_connection is not None:
+        performance = theatre_connection.execute(
+            "SELECT starts_at, status FROM performances WHERE source_key = ?", (row["performance_key"],)
+        ).fetchone()
+        if performance is None or performance["status"] != "scheduled" or performance["starts_at"] != row["planned_starts_at"]:
+            return False
+        from theatre_bot.notifications import _local_datetime
+        moment = now or datetime.now(timezone.utc)
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        # A resumed worker must not send a "tomorrow" reminder hours late.
+        if moment > _local_datetime(performance["starts_at"]) - timedelta(hours=23, minutes=30):
+            return False
+    return True
 
 
 def _cancel_reply(

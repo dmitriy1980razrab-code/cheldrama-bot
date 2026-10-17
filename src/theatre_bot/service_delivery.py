@@ -15,10 +15,12 @@ def queue_service_notifications(
     protector: IdentityProtector,
     limit: int = 100,
     now: datetime | None = None,
+    *, include_future: bool = False,
 ) -> int:
     queued = 0
     for notification in pending_notifications(
-        connection, protector, limit=limit, now=now
+        connection, protector, limit=limit, now=now,
+        include_future=include_future, unqueued_only=True,
     ):
         message = OutgoingMessage(
             notification.channel,
@@ -33,6 +35,7 @@ def queue_service_notifications(
             at=now,
             source_type="service_notification",
             source_key=str(notification.queue_id),
+            available_at=datetime.fromisoformat(notification.deliver_after) if notification.deliver_after else None,
         ):
             queued += 1
     return queued
