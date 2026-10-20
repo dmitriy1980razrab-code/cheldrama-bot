@@ -9,9 +9,12 @@ import threading
 from theatre_bot.channels import IncomingMessage, OutgoingButton, OutgoingMessage
 from theatre_bot.dialog import Reply, answer, selected_performance_reply
 from theatre_bot.platform_adapters import register_inbound_event
-from theatre_bot.subscribers import IdentityProtector
+from theatre_bot.subscribers import IdentityProtector, unsubscribe, performance_subscription
+from theatre_bot.spam_protection import check_message, normalize_message, MAX_MESSAGE_CHARS
 from theatre_bot.subscription_flow import (
     FlowReply,
+    FlowState,
+    DOCUMENT_VERSIONS,
     SubscriptionSession,
     handle_subscription_action,
     legal_documents_reply,
@@ -199,6 +202,51 @@ class ChannelMessageHandler:
 
         def response(reply: Reply, buttons=()) -> OutgoingMessage:
             return OutgoingMessage(message.channel, message.external_user_id, reply, buttons)
+
+        opt_out = not message.action and normalize_message(message.text) in {
+            "отписаться", "отписаться от всех", "стоп", "stop",
+        }
+        if opt_out:
+            changed = unsubscribe(
+                self._subscribers, self._protector, message.channel, message.external_user_id,
+                DOCUMENT_VERSIONS["service_notifications"], "channel_bot", at=now,
+            )
+            if changed:
+                self._flows.clear(message.channel, message.external_user_id)
+                return response(Reply("Все подписки отключены. Сервисные и рекламные сообщения больше не будут приходить."))
+
+        flow = self._flows.get(message.channel, message.external_user_id, now=now)
+        parts = message.action.split(":", 2) if message.action else []
+        valid_flow_button = (
+            flow is not None and flow.performance_key is not None
+            and len(parts) == 3 and parts[0] == "flow" and parts[1] == flow.interaction_id
+        )
+        # Real unsubscribe/cancel controls remain usable during a temporary pause.
+        protected_action = valid_flow_button and (
+            (parts[2] == "unsubscribe" and performance_subscription(
+                self._subscribers, self._protector, message.channel,
+                message.external_user_id, flow.performance_key,
+            ) is not None)
+            or (parts[2] == "cancel" and flow.state in {
+                FlowState.PERSONAL_DATA, FlowState.SERVICE_NOTIFICATIONS, FlowState.MARKETING,
+            })
+        )
+        if not protected_action:
+            decision = check_message(
+                self._subscribers, self._protector, message.channel, message.external_user_id,
+                message.text, is_action=bool(message.action), now=now,
+            )
+            if not decision.allowed:
+                if decision.warn:
+                    return response(Reply(
+                        "Слишком много сообщений или одинаковых повторов. Сделаем паузу на 10 минут. "
+                        "Чтобы отключить все рассылки, напишите «Отписаться»."
+                    ))
+                return None
+        if opt_out:
+            return response(Reply("Активных подписок нет."))
+        if not message.action and len(message.text) > MAX_MESSAGE_CHARS:
+            return response(Reply("Сообщение слишком длинное. Задайте вопрос короче — до 1000 символов."))
 
         if message.action and message.action.startswith("choose:"):
             key = message.action[len("choose:"):]

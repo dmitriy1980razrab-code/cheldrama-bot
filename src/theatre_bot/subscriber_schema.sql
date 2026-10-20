@@ -187,3 +187,16 @@ CREATE TABLE IF NOT EXISTS notification_checks (
     checked_at TEXT NOT NULL,
     PRIMARY KEY (performance_key, starts_at, stage)
 );
+
+CREATE TABLE IF NOT EXISTS spam_guard_state (
+    actor_hash TEXT PRIMARY KEY,
+    text_tokens REAL NOT NULL,
+    action_tokens REAL NOT NULL,
+    last_refill REAL NOT NULL,
+    repeat_hash TEXT,
+    repeat_count INTEGER NOT NULL,
+    repeat_since REAL NOT NULL,
+    blocked_until REAL NOT NULL DEFAULT 0,
+    last_seen REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_spam_guard_state_expiry ON spam_guard_state(last_seen);
