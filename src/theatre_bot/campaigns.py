@@ -52,6 +52,7 @@ def create_campaign(
     target_key: str | None = None,
     target_label: str | None = None,
     at: datetime | None = None,
+    *, premieres_only: bool = False,
 ) -> int:
     actor = _require_actor(created_by)
     if channel not in ALLOWED_CHANNELS:
@@ -70,14 +71,14 @@ def create_campaign(
             """
             INSERT INTO campaigns (
                 name, message, channel, target_type, target_key, target_label,
-                created_by, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                created_by, created_at, premieres_only
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 name.strip(), message.strip(), channel, target_type,
                 target_key.strip() if target_key else None,
                 target_label.strip() if target_label else None,
-                actor, timestamp,
+                actor, timestamp, int(premieres_only),
             ),
         )
         connection.execute(
@@ -108,6 +109,7 @@ def _eligible_rows(
         WHERE s.status = 'active'
           AND s.external_id_encrypted IS NOT NULL
           AND (? = 'all' OR s.channel = ?)
+          AND (? = 0 OR s.interested_in_premieres = 1)
           AND (
               SELECT action FROM consent_events c
               WHERE c.subscriber_id = s.id AND c.consent_type = 'marketing'
@@ -130,7 +132,7 @@ def _eligible_rows(
     return connection.execute(
         query,
         (
-            campaign["channel"], campaign["channel"],
+            campaign["channel"], campaign["channel"], int(campaign["premieres_only"]),
             campaign["target_type"], campaign["target_type"],
             campaign["target_key"], cutoff,
         ),

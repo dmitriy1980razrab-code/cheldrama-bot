@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS subscribers (
     external_id_hash TEXT NOT NULL,
     external_id_encrypted BLOB,
     display_name_encrypted BLOB,
+    interested_in_premieres INTEGER NOT NULL DEFAULT 0 CHECK (interested_in_premieres IN (0, 1)),
     status TEXT NOT NULL DEFAULT 'pending'
         CHECK (status IN ('pending', 'active', 'unsubscribed')),
     subscribed_at TEXT,
@@ -83,6 +84,7 @@ CREATE TABLE IF NOT EXISTS campaigns (
         CHECK (target_type IN ('all', 'play', 'artist', 'genre')),
     target_key TEXT,
     target_label TEXT,
+    premieres_only INTEGER NOT NULL DEFAULT 0 CHECK (premieres_only IN (0, 1)),
     status TEXT NOT NULL DEFAULT 'draft'
         CHECK (status IN ('draft', 'approved', 'scheduled', 'cancelled', 'completed')),
     created_by TEXT NOT NULL,
@@ -200,3 +202,15 @@ CREATE TABLE IF NOT EXISTS spam_guard_state (
     last_seen REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_spam_guard_state_expiry ON spam_guard_state(last_seen);
+
+CREATE TABLE IF NOT EXISTS interest_survey_state (
+    actor_hash TEXT PRIMARY KEY,
+    decline_count INTEGER NOT NULL DEFAULT 0,
+    never_offer INTEGER NOT NULL DEFAULT 0,
+    next_offer_at TEXT,
+    stage TEXT NOT NULL,
+    payload_encrypted BLOB,
+    expires_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_interest_survey_expiry ON interest_survey_state(expires_at);

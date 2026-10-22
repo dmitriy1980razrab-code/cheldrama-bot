@@ -8,6 +8,7 @@ import threading
 
 from theatre_bot.channels import IncomingMessage, OutgoingButton, OutgoingMessage
 from theatre_bot.dialog import Reply, answer, selected_performance_reply
+from theatre_bot.interest_survey import InterestSurvey
 from theatre_bot.platform_adapters import register_inbound_event
 from theatre_bot.subscribers import IdentityProtector, unsubscribe, performance_subscription
 from theatre_bot.spam_protection import check_message, normalize_message, MAX_MESSAGE_CHARS
@@ -141,7 +142,9 @@ class ChannelMessageHandler:
         protector: IdentityProtector,
         flow_store: SubscriptionFlowStore | None = None,
         context_store: ConversationContextStore | None = None,
+        survey_enabled: bool = False,
     ) -> None:
+        self._survey = InterestSurvey(theatre_connection, subscriber_connection, protector) if survey_enabled else None
         self._theatre = theatre_connection
         self._subscribers = subscriber_connection
         self._protector = protector
@@ -188,7 +191,13 @@ class ChannelMessageHandler:
             combined, self._flow_buttons(menu, session),
         )
 
-    def process(
+    def process(self, message: IncomingMessage, now: datetime | None = None) -> OutgoingMessage | None:
+        outgoing = self._process(message, now)
+        if outgoing is not None and self._survey is not None:
+            return self._survey.offer(message, outgoing, now)
+        return outgoing
+
+    def _process(
         self,
         message: IncomingMessage,
         now: datetime | None = None,
@@ -207,6 +216,8 @@ class ChannelMessageHandler:
             "отписаться", "отписаться от всех", "стоп", "stop",
         }
         if opt_out:
+            if self._survey is not None:
+                self._survey.close(message, now)
             changed = unsubscribe(
                 self._subscribers, self._protector, message.channel, message.external_user_id,
                 DOCUMENT_VERSIONS["service_notifications"], "channel_bot", at=now,
@@ -231,6 +242,8 @@ class ChannelMessageHandler:
                 FlowState.PERSONAL_DATA, FlowState.SERVICE_NOTIFICATIONS, FlowState.MARKETING,
             })
         )
+        if self._survey is not None:
+            protected_action = protected_action or self._survey.valid_cancel(message, now)
         if not protected_action:
             decision = check_message(
                 self._subscribers, self._protector, message.channel, message.external_user_id,
@@ -247,6 +260,12 @@ class ChannelMessageHandler:
             return response(Reply("Активных подписок нет."))
         if not message.action and len(message.text) > MAX_MESSAGE_CHARS:
             return response(Reply("Сообщение слишком длинное. Задайте вопрос короче — до 1000 символов."))
+
+        if self._survey is not None:
+            survey_reply = self._survey.try_handle(message, now)
+            if survey_reply is not None:
+                self._flows.clear(message.channel, message.external_user_id)
+                return survey_reply
 
         if message.action and message.action.startswith("choose:"):
             key = message.action[len("choose:"):]

@@ -109,8 +109,11 @@ def _vk_keyboard(message: OutgoingMessage) -> str | None:
         }]
         for button in message.buttons
     ]
+    keyboard = {"inline": message.keyboard_inline, "buttons": buttons}
+    if not message.keyboard_inline:
+        keyboard["one_time"] = False
     return json.dumps(
-        {"inline": True, "buttons": buttons},
+        keyboard,
         ensure_ascii=False,
         separators=(",", ":"),
     )

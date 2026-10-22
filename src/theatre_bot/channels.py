@@ -23,6 +23,7 @@ class OutgoingMessage:
     reply: Reply
     buttons: tuple["OutgoingButton", ...] = ()
     vk_random_id: int | None = None
+    keyboard_inline: bool = True
 
 
 @dataclass(frozen=True)

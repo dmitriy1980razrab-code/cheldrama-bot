@@ -114,6 +114,7 @@ class ServerChannelProcessor:
                 self._protector,
                 flow_store=self._flows,
                 context_store=self._context,
+                survey_enabled=True,
             )
             return handler.process(message)
         finally:

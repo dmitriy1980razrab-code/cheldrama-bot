@@ -85,6 +85,7 @@ def _serialize(message: OutgoingMessage) -> bytes:
             "choices": [asdict(choice) for choice in message.reply.choices],
         },
         "buttons": [asdict(button) for button in message.buttons],
+        "keyboard_inline": message.keyboard_inline,
     }
     return json.dumps(
         payload, ensure_ascii=False, separators=(",", ":")
@@ -102,6 +103,7 @@ def _deserialize(payload: bytes) -> OutgoingMessage:
             tuple(PerformanceChoice(**choice) for choice in value["reply"].get("choices", [])),
         ),
         buttons=tuple(OutgoingButton(**button) for button in value.get("buttons", [])),
+        keyboard_inline=value.get("keyboard_inline", True),
     )
 
 

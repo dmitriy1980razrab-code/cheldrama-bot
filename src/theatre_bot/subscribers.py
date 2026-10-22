@@ -35,6 +35,7 @@ class SubscriberProfile:
     subscriptions: tuple[tuple[str, str], ...]
     preferences: tuple[tuple[str, str], ...]
     consents: dict[str, bool]
+    interested_in_premieres: bool = False
 
 
 class IdentityProtector:
@@ -114,6 +115,15 @@ def initialize_subscribers(connection: sqlite3.Connection) -> None:
         connection.execute(
             "ALTER TABLE subscribers ADD COLUMN display_name_encrypted BLOB"
         )
+    if "interested_in_premieres" not in columns:
+        connection.execute("ALTER TABLE subscribers ADD COLUMN interested_in_premieres INTEGER NOT NULL DEFAULT 0 CHECK (interested_in_premieres IN (0, 1))")
+    campaign_columns = {row["name"] for row in connection.execute("PRAGMA table_info(campaigns)")}
+    if "premieres_only" not in campaign_columns:
+        connection.execute("ALTER TABLE campaigns ADD COLUMN premieres_only INTEGER NOT NULL DEFAULT 0 CHECK (premieres_only IN (0, 1))")
+    survey_columns = {row["name"] for row in connection.execute("PRAGMA table_info(interest_survey_state)")}
+    for name, definition in {"decline_count": "INTEGER NOT NULL DEFAULT 0", "never_offer": "INTEGER NOT NULL DEFAULT 0", "next_offer_at": "TEXT"}.items():
+        if name not in survey_columns:
+            connection.execute(f"ALTER TABLE interest_survey_state ADD COLUMN {name} {definition}")
     subscription_columns = {
         row["name"]
         for row in connection.execute("PRAGMA table_info(subscriptions)").fetchall()
@@ -577,6 +587,7 @@ def _build_profile(
         subscriptions=subscriptions,
         preferences=preferences,
         consents=_current_consents(connection, row["id"]),
+        interested_in_premieres=bool(row["interested_in_premieres"]),
     )
 
 
