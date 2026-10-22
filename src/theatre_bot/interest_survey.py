@@ -169,7 +169,7 @@ class InterestSurvey:
         all_options = data['genre_options' if stage=='genres' else 'artist_options']
         labels = [v['label'] for v in all_options if v['key'] in selected]
         summary = ', '.join(labels) if labels else 'пока ничего'
-        text = heading+f'\nВыбрано: {summary}.\nМожно выбрать до 20 вариантов, повторное нажатие снимает выбор. Страница {page+1}/{page_count}.\nДля выхода напишите «Отмена».'
+        text = heading+f'\nВыбрано: {summary}.\nМожно выбрать несколько вариантов. Повторное нажатие снимает выбор.\nДля выхода напишите «Отмена».'
         if not options:
             text += '\nПодходящих вариантов нет. Можно пропустить вопрос.'
         return self._reply(message, data, text, buttons)
