@@ -60,35 +60,35 @@ class InterestSurveyTests(unittest.TestCase):
         intro = self.send('Анкета интересов')
         consent = self.click(intro, 'Начать')
         if any(b.label=='Согласен' for b in consent.buttons):
-            return self.click(consent, 'Согласен')
-        return consent
+            return self.click(self.click(consent, 'Согласен'), 'Жанры')
+        return self.click(consent, 'Жанры')
 
     def finish(self, marketing=True, premiere=True, genres=True, artist=True):
         reply = self.genres()
         if genres:
             reply = self.click(reply, 'Драма')
-        reply = self.click(reply, 'Далее' if genres else 'Пропустить')
+        reply = self.click(self.click(reply, 'К разделам анкеты'), 'Артисты')
         if artist:
             reply = self.click(reply, 'Анна Иванова')
-        reply = self.click(reply, 'Далее' if artist else 'Пропустить')
+        reply = self.click(self.click(reply, 'К разделам анкеты'), 'Премьеры')
         reply = self.click(reply, 'Да' if premiere else 'Нет')
-        return self.click(reply, 'Сохранить' if marketing else 'Не сохранять')
+        return self.click(self.click(reply, 'Завершить анкету'), 'Сохранить' if marketing else 'Не сохранять')
 
     def count(self, table):
         return self.db.execute('SELECT count(*) FROM '+table).fetchone()[0]
 
     def test_first_question_retains_answer_and_adds_brief_invitation_once(self):
-        first = self.send('Гамлет')
-        self.assertIn('Гамлет', first.reply.cards[0].title)
+        first = self.send('Здравствуйте')
+        self.assertTrue(first.reply.text)
         self.assertIn('Анкета интересов', [b.label for b in first.buttons])
         self.assertNotIn('персональных', first.reply.text)
         self.assertEqual(self.count('subscribers'), 0)
-        again = self.send('Гамлет')
-        self.assertNotIn('Анкета интересов', [b.label for b in again.buttons])
+        again = self.send('Здравствуйте')
+        self.assertNotIn('Пропустить анкету', [b.label for b in again.buttons])
 
     def test_invitation_skip_persists_after_restart_without_profile(self):
-        first = self.send('Гамлет')
-        self.click(first, 'Пропустить')
+        first = self.send('Здравствуйте')
+        self.click(first, 'Пропустить анкету')
         self.db.close()
         self.db = connect_subscribers(self.root/'subscribers.sqlite3')
         initialize_subscribers(self.db)
@@ -178,10 +178,10 @@ class InterestSurveyTests(unittest.TestCase):
             self.db.execute("INSERT INTO preferences(subscriber_id,preference_type,preference_key,preference_label,source,recorded_at) VALUES(1,'play','play','Гамлет','subscription','now')")
         reply = self.genres()
         reply = self.click(reply, '✓ Драма')
-        reply = self.click(reply, 'Пропустить')
+        reply = self.click(self.click(reply, 'К разделам анкеты'), 'Артисты')
         reply = self.click(reply, '✓ Анна Иванова')
-        reply = self.click(reply, 'Пропустить')
-        reply = self.click(reply, 'Нет')
+        reply = self.click(self.click(reply, 'К разделам анкеты'), 'Премьеры')
+        reply = self.click(self.click(reply, 'Нет'), 'Завершить анкету')
         self.click(reply, 'Сохранить')
         rows = [tuple(r) for r in self.db.execute('SELECT preference_type,preference_label FROM preferences')]
         self.assertEqual(rows, [('play','Гамлет')])
@@ -210,7 +210,7 @@ class InterestSurveyTests(unittest.TestCase):
         self.db = connect_subscribers(self.root/'subscribers.sqlite3')
         initialize_subscribers(self.db)
         self.handler = self.make_handler()
-        artists = self.click(updated, 'Далее')
+        artists = self.click(self.click(updated, 'К разделам анкеты'), 'Артисты')
         self.assertIn('артистов', artists.reply.text)
 
     def test_expired_draft_cannot_accept_old_button(self):
@@ -222,13 +222,13 @@ class InterestSurveyTests(unittest.TestCase):
 
     def test_artist_name_search_and_empty_search_can_be_skipped(self):
         genres = self.genres()
-        self.click(genres, 'Пропустить')
+        self.click(self.click(genres, 'К разделам анкеты'), 'Артисты')
         result = self.send('Иванова')
         self.assertIn('Анна Иванова', [b.label for b in result.buttons])
         self.assertNotIn('Пётр Петров', [b.label for b in result.buttons])
         result = self.send('Несуществующая фамилия')
         self.assertIn('Подходящих вариантов нет', result.reply.text)
-        self.assertIn('Интересуют ли', self.click(result, 'Пропустить').reply.text)
+        self.assertIn('Анкета интересов', self.click(result, 'К разделам анкеты').reply.text)
 
     def test_ordinary_question_can_exit_non_artist_step(self):
         self.genres()
@@ -255,10 +255,10 @@ class InterestSurveyTests(unittest.TestCase):
 
     def test_removed_artist_is_not_saved_from_stale_catalogue(self):
         genres = self.genres()
-        artists = self.click(genres, 'Пропустить')
+        artists = self.click(self.click(genres, 'К разделам анкеты'), 'Артисты')
         artists = self.click(artists, 'Анна Иванова')
-        premiere = self.click(artists, 'Далее')
-        marketing = self.click(premiere, 'Да')
+        premiere = self.click(self.click(artists, 'К разделам анкеты'), 'Премьеры')
+        marketing = self.click(self.click(premiere, 'Да'), 'Завершить анкету')
         with self.theatre:
             self.theatre.execute("UPDATE artists SET is_active=0 WHERE source_url='artist-1'")
         result = self.click(marketing, 'Сохранить')
@@ -287,7 +287,7 @@ class InterestSurveyTests(unittest.TestCase):
             for number in range(3, 8):
                 self.theatre.execute("INSERT INTO artists(source_url,full_name,normalized_name,synced_at) VALUES(?,?,?,'now')",
                     (f'artist-{number}', f'Артист {number}', f'артист {number}'))
-        reply = self.click(self.genres(), 'Пропустить')
+        reply = self.click(self.click(self.genres(), 'К разделам анкеты'), 'Артисты')
         chosen = reply.buttons[0].label
         reply = self.click(reply, chosen)
         for _ in range(3):
@@ -298,10 +298,10 @@ class InterestSurveyTests(unittest.TestCase):
     def test_fairy_tale_is_a_genre_from_active_theatre_data(self):
         with self.theatre:
             self.theatre.execute("UPDATE plays SET genre='Сказка'")
-        self.assertEqual(genre_options(self.theatre), [{'key':'сказка','label':'Сказка'}])
+        self.assertIn({'key':'сказка','label':'Сказка'}, genre_options(self.theatre))
 
     def test_artist_search_accepts_e_instead_of_yo(self):
-        self.click(self.genres(), 'Пропустить')
+        self.click(self.click(self.genres(), 'К разделам анкеты'), 'Артисты')
         reply = self.send('Петр')
         self.assertIn('Пётр Петров', [b.label for b in reply.buttons])
 
@@ -317,9 +317,9 @@ class InterestSurveyTests(unittest.TestCase):
 
     def test_revoked_personal_consent_requires_confirmation_again(self):
         reply = self.genres()
-        reply = self.click(reply, 'Пропустить')
-        reply = self.click(reply, 'Пропустить')
-        reply = self.click(reply, 'Да')
+        reply = self.click(self.click(reply, 'К разделам анкеты'), 'Артисты')
+        reply = self.click(self.click(reply, 'К разделам анкеты'), 'Премьеры')
+        reply = self.click(self.click(reply, 'Да'), 'Завершить анкету')
         record_consent(self.db,self.protector,'vk','123','personal_data','v1',False,'test',at=self.now)
         result = self.click(reply, 'Сохранить')
         self.assertIn('Согласен', [b.label for b in result.buttons])
@@ -328,9 +328,9 @@ class InterestSurveyTests(unittest.TestCase):
 
     def test_completed_questionnaire_cannot_regrant_ads_after_revocation(self):
         reply = self.genres()
-        reply = self.click(reply, 'Пропустить')
-        reply = self.click(reply, 'Пропустить')
-        reply = self.click(reply, 'Да')
+        reply = self.click(self.click(reply, 'К разделам анкеты'), 'Артисты')
+        reply = self.click(self.click(reply, 'К разделам анкеты'), 'Премьеры')
+        reply = self.click(self.click(reply, 'Да'), 'Завершить анкету')
         old_action = next(b.action for b in reply.buttons if b.label=='Сохранить')
         self.send(action=old_action)
         record_consent(self.db,self.protector,'vk','123','marketing','v1',False,'test',at=self.now)
@@ -342,9 +342,9 @@ class InterestSurveyTests(unittest.TestCase):
         import sqlite3
         genres = self.genres()
         artists = self.click(genres, 'Драма')
-        artists = self.click(artists, 'Далее')
-        premiere = self.click(artists, 'Пропустить')
-        self.click(premiere, 'Да')
+        artists = self.click(self.click(artists, 'К разделам анкеты'), 'Артисты')
+        premiere = self.click(self.click(artists, 'К разделам анкеты'), 'Премьеры')
+        self.click(self.click(premiere, 'Да'), 'Завершить анкету')
         survey = InterestSurvey(self.theatre,self.db,self.protector)
         message = IncomingMessage('vk','123','test','')
         _, data = survey._load(message, self.now)
@@ -367,12 +367,12 @@ class InterestSurveyTests(unittest.TestCase):
         self.assertIsNone(self.db.execute('SELECT payload_encrypted FROM interest_survey_state').fetchone()[0])
 
     def test_invitation_returns_only_after_calendar_month_and_new_question(self):
-        first = self.send('Гамлет')
-        self.click(first, 'Пропустить')
+        first = self.send('Здравствуйте')
+        self.click(first, 'Пропустить анкету')
         self.now = self.now.replace(month=11, day=21)
-        self.assertNotIn('Хотите настроить интересы?', self.send('Гамлет').reply.text)
+        self.assertNotIn('Хотите настроить интересы?', self.send('Здравствуйте').reply.text)
         self.now = self.now.replace(day=22)
-        result = self.send('Гамлет')
+        result = self.send('Здравствуйте')
         self.assertIn('Хотите настроить интересы?', result.reply.text)
         self.assertIn('Анкета интересов', [b.label for b in result.buttons])
 
@@ -386,7 +386,7 @@ class InterestSurveyTests(unittest.TestCase):
         self.assertEqual(self.db.execute('SELECT decline_count FROM interest_survey_state').fetchone()[0], 3)
         self.click(result, 'Больше не предлагать')
         self.now += timedelta(days=120)
-        self.assertNotIn('Хотите настроить интересы?', self.send('Гамлет').reply.text)
+        self.assertNotIn('Хотите настроить интересы?', self.send('Здравствуйте').reply.text)
         self.assertIn('Начать', [b.label for b in self.send('Анкета интересов').buttons])
 
     def test_third_decline_can_keep_monthly_reminder(self):
@@ -394,7 +394,7 @@ class InterestSurveyTests(unittest.TestCase):
             result = self.click(self.send('Анкета интересов'), 'Пропустить')
         self.click(result, 'Напомнить через месяц')
         self.now = self.now.replace(month=11)
-        self.assertIn('Хотите настроить интересы?', self.send('Гамлет').reply.text)
+        self.assertIn('Хотите настроить интересы?', self.send('Здравствуйте').reply.text)
         self.assertEqual(self.db.execute('SELECT never_offer FROM interest_survey_state').fetchone()[0], 0)
 
     def test_repeated_decline_button_counts_once(self):
@@ -415,9 +415,9 @@ class InterestSurveyTests(unittest.TestCase):
         self.now += timedelta(minutes=2)
         reply = self.genres()
         reply = self.click(reply, '✓ Драма')
-        reply = self.click(reply, 'Пропустить')
-        reply = self.click(reply, 'Далее')
-        reply = self.click(reply, 'Нет')
+        reply = self.click(self.click(reply, 'К разделам анкеты'), 'Артисты')
+        reply = self.click(self.click(reply, 'К разделам анкеты'), 'Премьеры')
+        reply = self.click(self.click(reply, 'Нет'), 'Завершить анкету')
         self.click(reply, 'Не сохранять')
         self.assertEqual([tuple(r) for r in self.db.execute('SELECT * FROM preferences')], before)
         self.assertEqual(self.db.execute('SELECT interested_in_premieres FROM subscribers').fetchone()[0], 1)
@@ -442,8 +442,48 @@ class InterestSurveyTests(unittest.TestCase):
     def test_completed_survey_is_not_offered_monthly(self):
         self.finish()
         self.now += timedelta(days=65)
-        self.assertNotIn('Хотите настроить интересы?', self.send('Гамлет').reply.text)
+        self.assertNotIn('Хотите настроить интересы?', self.send('Здравствуйте').reply.text)
         self.assertEqual(self.db.execute('SELECT decline_count FROM interest_survey_state').fetchone()[0], 0)
+
+    def test_section_menu_allows_any_order_and_edit_before_saving(self):
+        genres = self.genres()
+        menu = self.click(genres, 'К разделам анкеты')
+        self.assertEqual([b.label for b in menu.buttons], ['Жанры','Артисты','Премьеры','Завершить анкету'])
+        menu = self.click(self.click(menu, 'Премьеры'), 'Да')
+        artists = self.click(menu, 'Артисты')
+        artists = self.click(artists, 'Анна Иванова')
+        menu = self.click(artists, 'К разделам анкеты')
+        genres = self.click(menu, 'Жанры')
+        genres = self.click(genres, 'Драма')
+        menu = self.click(genres, 'К разделам анкеты')
+        final = self.click(menu, 'Завершить анкету')
+        menu = self.click(final, 'Изменить ответы')
+        self.assertIn('Анна Иванова', menu.reply.text)
+        self.assertIn('Драма', menu.reply.text)
+        self.assertIn('Премьеры: да', menu.reply.text)
+        final = self.click(menu, 'Завершить анкету')
+        self.assertIn('Интересы сохранены', self.click(final, 'Сохранить').reply.text)
+
+    def test_author_subtitles_are_not_questionnaire_categories(self):
+        with self.theatre:
+            self.theatre.execute("UPDATE plays SET genre='Встреча сообщества Подтекст'")
+        labels = [v['label'] for v in genre_options(self.theatre)]
+        self.assertEqual(labels, ['Комедия','Драма','Трагедия','Мелодрама','Музыкальный спектакль','Сказка'])
+
+    def test_date_and_subscription_buttons_never_include_survey_invitation(self):
+        from theatre_bot.channels import OutgoingButton, OutgoingMessage
+        survey = InterestSurvey(self.theatre, self.db, self.protector)
+        incoming = IncomingMessage('vk','123','test','Гамлет')
+        outgoing = OutgoingMessage('vk','123', Reply('Выберите дату'),
+                                   (OutgoingButton('choose:test','20 ноября'),))
+        result = survey.offer(incoming, outgoing, self.now)
+        self.assertEqual(result, outgoing)
+        self.assertEqual(self.count('interest_survey_state'), 0)
+
+    def test_invitation_skip_label_is_explicit(self):
+        reply = self.send('Здравствуйте')
+        self.assertIn('Пропустить анкету', [b.label for b in reply.buttons])
+        self.assertNotIn('Пропустить', [b.label for b in reply.buttons])
 
 if __name__ == '__main__':
     unittest.main()

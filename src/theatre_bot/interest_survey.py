@@ -95,7 +95,7 @@ class InterestSurvey:
             'Новые ответы не сохранены. Прежние настройки не изменены. Через месяц при Вашем обращении можем снова предложить анкету.')
 
     def offer(self, message, outgoing, now=None):
-        if message.action or len(outgoing.buttons)>3 or normalize_message(message.text) in OPEN_COMMANDS | {'отписаться','отписаться от всех','стоп','stop'}:
+        if message.action or outgoing.buttons or outgoing.reply.choices or normalize_message(message.text) in OPEN_COMMANDS | {'отписаться','отписаться от всех','стоп','stop'}:
             return outgoing
         if outgoing.reply.text.startswith(('Слишком много сообщений', 'Сообщение слишком длинное')):
             return outgoing
@@ -110,7 +110,7 @@ class InterestSurvey:
         with self.db:
             self.db.execute('UPDATE interest_survey_state SET next_offer_at=? WHERE actor_hash=?',
                 (_timestamp(next_month(self._now(now).astimezone(THEATRE_TIMEZONE))), self._actor(message)))
-        extra = self._reply(message, data, '', [('open','Анкета интересов'),('cancel','Пропустить')]).buttons
+        extra = self._reply(message, data, '', [('open','Анкета интересов'),('cancel','Пропустить анкету')]).buttons
         return replace(outgoing, reply=replace(outgoing.reply, text=outgoing.reply.text+'\n\nХотите настроить интересы?'),
                        buttons=outgoing.buttons+extra)
 
@@ -125,7 +125,30 @@ class InterestSurvey:
     def _begin_choices(self, message, now):
         data = current_preferences(self.db, self.protector, message.channel, message.external_user_id)
         data.update(genre_options=genre_options(self.theatre), artist_options=artist_options(self.theatre), page=0, search='')
-        return self._choices(message, 'genres', data, now)
+        return self._sections(message, data, now)
+
+    def _sections(self, message, data, now):
+        self._save(message, 'sections', data, now)
+        genres = ', '.join(v['label'] for v in data['genre_options'] if v['key'] in data['genres']) or 'не выбраны'
+        artists = ', '.join(v['label'] for v in data['artist_options'] if v['key'] in data['artists']) or 'не выбраны'
+        premieres = 'да' if data['premieres'] else 'нет'
+        return self._reply(message, data,
+            f'Анкета интересов. Выберите раздел, который хотите заполнить или изменить.\n'
+            f'Жанры: {genres}.\nАртисты: {artists}.\nПремьеры: {premieres}.\n'
+            'Любой раздел можно оставить без выбора. Для выхода напишите «Отмена».',
+            [('genres','Жанры'),('artists','Артисты'),('premieres','Премьеры'),('finish','Завершить анкету')])
+
+    def _premieres(self, message, data, now):
+        self._save(message, 'premieres', data, now)
+        return self._reply(message, data, 'Интересуют ли Вас премьеры театра?',
+            [('yes','Да'),('no','Нет'),('skip','Назад к разделам')])
+
+    def _finish(self, message, data, now):
+        self._save(message, 'marketing', data, now)
+        return self._reply(message, data,
+            'Нажимая «Сохранить», Вы сохраняете интересы и соглашаетесь получать от театра рекламные предложения, акции и приглашения. '
+            'Разрешение можно отозвать командой «Отписаться». При выборе «Не сохранять» новые ответы будут удалены; прежние настройки останутся без изменений.',
+            [('allow','Сохранить'),('decline','Не сохранять'),('sections','Изменить ответы')])
 
     def _choices(self, message, stage, data, now):
         options = data['genre_options' if stage=='genres' else 'artist_options']
@@ -141,7 +164,7 @@ class InterestSurvey:
         buttons = [(f'toggle:{i}', ('✓ ' if v['key'] in selected else '')+v['label'][:35]) for i, v in enumerate(visible)]
         if page_count>1:
             buttons.append(('page', 'Ещё жанры' if stage=='genres' else 'Ещё артисты'))
-        buttons.append(('next', 'Далее' if selected else 'Пропустить'))
+        buttons.append(('next', 'К разделам анкеты'))
         heading = 'Какие жанры Вам интересны?' if stage=='genres' else 'Кого из артистов Вы хотели бы видеть на сцене?\nМожно ввести фамилию для поиска; «Все артисты» — вернуть список.'
         all_options = data['genre_options' if stage=='genres' else 'artist_options']
         labels = [v['label'] for v in all_options if v['key'] in selected]
@@ -197,6 +220,16 @@ class InterestSurvey:
             record_consent(self.db, self.protector, message.channel, message.external_user_id,
                 'personal_data', DOCUMENT_VERSIONS['personal_data'], True, 'interest_survey', at=now, display_name=message.display_name)
             return self._begin_choices(message, now)
+        if stage=='sections' and action in {'genres','artists','premieres','finish'}:
+            data['page'] = 0
+            data['search'] = ''
+            if action in {'genres','artists'}:
+                return self._choices(message, action, data, now)
+            if action=='premieres':
+                return self._premieres(message, data, now)
+            return self._finish(message, data, now)
+        if stage=='marketing' and action=='sections':
+            return self._sections(message, data, now)
         if stage in {'genres','artists'}:
             if action.startswith('toggle:'):
                 try:
@@ -217,20 +250,11 @@ class InterestSurvey:
                 data['page'] += 1
                 return self._choices(message, stage, data, now)
             if action=='next':
-                data['page'] = 0
-                if stage=='genres':
-                    return self._choices(message, 'artists', data, now)
-                self._save(message, 'premieres', data, now)
-                return self._reply(message, data, 'Интересуют ли Вас премьеры театра?',
-                    [('yes','Да'),('no','Нет'),('skip','Пропустить'),('cancel','Отмена')])
+                return self._sections(message, data, now)
         if stage=='premieres' and action in {'yes','no','skip'}:
             if action!='skip':
                 data['premieres'] = action=='yes'
-            self._save(message, 'marketing', data, now)
-            return self._reply(message, data,
-                'Нажимая «Сохранить», Вы сохраняете интересы и соглашаетесь получать от театра рекламные предложения, акции и приглашения. '
-                'Разрешение можно отозвать командой «Отписаться». При выборе «Не сохранять» новые ответы будут удалены; прежние настройки останутся без изменений.',
-                [('allow','Сохранить'),('decline','Не сохранять')])
+            return self._sections(message, data, now)
         if stage=='marketing' and action in {'allow','decline'}:
             if action=='decline':
                 return self.decline(message, now)

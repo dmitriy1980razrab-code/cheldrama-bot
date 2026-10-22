@@ -1,17 +1,21 @@
 """Explicit questionnaire preferences and atomic saving of advertising permission."""
 import json
-from theatre_bot.spam_protection import normalize_message
 from theatre_bot.subscribers import _has_current_consent, _get_or_create_subscriber, _timestamp
 
 
+GENRE_CATEGORIES = (
+    ('комедия', 'Комедия'),
+    ('драма', 'Драма'),
+    ('трагедия', 'Трагедия'),
+    ('мелодрама', 'Мелодрама'),
+    ('музыкальный спектакль', 'Музыкальный спектакль'),
+    ('сказка', 'Сказка'),
+)
+
 def genre_options(theatre):
-    rows = theatre.execute("SELECT DISTINCT genre FROM plays WHERE is_active=1 AND genre IS NOT NULL ORDER BY genre").fetchall()
-    result = {}
-    for row in rows:
-        label = ' '.join(row['genre'].split())
-        if label:
-            result.setdefault(normalize_message(label), label[:150])
-    return [{'key': k, 'label': v} for k, v in result.items()]
+    """Use a small fixed vocabulary rather than publishing author subtitles."""
+    return [{'key': key, 'label': label} for key, label in GENRE_CATEGORIES]
+
 
 
 def artist_options(theatre):
