@@ -91,6 +91,18 @@ class InterestSurvey:
         if (not message.action and not outgoing.buttons
                 and not outgoing.reply.choices
                 and not outgoing.reply.text.startswith(('Слишком много сообщений', 'Сообщение слишком длинное'))):
+            if (message.channel=='vk' and normalize_message(message.text) not in
+                    {'отписаться','отписаться от всех','стоп','stop'}):
+                with self.db:
+                    first = self.db.execute(
+                        'INSERT OR IGNORE INTO channel_menu_hints(actor_hash, shown_at) VALUES (?, ?)',
+                        (self._actor(message), _timestamp(now)),
+                    ).rowcount == 1
+                if first:
+                    hint = ('Анкета интересов — рядом с полем ввода нажмите кнопку, если не отображается. '
+                            'Также можно написать «Мои интересы».')
+                    outgoing = replace(outgoing, reply=replace(outgoing.reply,
+                        text=outgoing.reply.text+'\n\n'+hint))
             return replace(outgoing, buttons=(OutgoingButton('survey:open', 'Анкета интересов'),), keyboard_inline=message.channel!='vk')
         return outgoing
 

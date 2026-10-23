@@ -562,5 +562,39 @@ class InterestSurveyTests(unittest.TestCase):
         self.assertEqual(self.db.execute('SELECT interested_in_premieres FROM subscribers').fetchone()[0], 1)
         self.assertEqual(self.db.execute('SELECT stage FROM interest_survey_state').fetchone()[0], 'delete_confirm')
 
+    def test_keyboard_hint_only_once_and_survives_restart(self):
+        first = self.send('Здравствуйте')
+        self.assertIn('рядом с полем ввода нажмите кнопку', first.reply.text)
+        self.assertIn('Мои интересы', first.reply.text)
+        self.assertNotIn('рядом с полем ввода нажмите кнопку', self.send('Спасибо').reply.text)
+        self.db.close()
+        self.db = connect_subscribers(self.root/'subscribers.sqlite3')
+        initialize_subscribers(self.db)
+        self.handler = self.make_handler()
+        self.assertNotIn('рядом с полем ввода нажмите кнопку', self.send('Здравствуйте').reply.text)
+        self.assertEqual(self.count('channel_menu_hints'), 1)
+        self.assertEqual(self.count('subscribers'), 0)
+        self.assertEqual(self.count('interest_survey_state'), 0)
+
+    def test_keyboard_hint_is_per_user_and_not_for_max(self):
+        self.assertIn('рядом с полем ввода нажмите кнопку', self.send('Здравствуйте').reply.text)
+        self.user = '456'
+        self.assertIn('рядом с полем ввода нажмите кнопку', self.send('Здравствуйте').reply.text)
+        self.channel = 'max'
+        self.assertNotIn('рядом с полем ввода нажмите кнопку', self.send('Здравствуйте').reply.text)
+        self.assertEqual(self.count('channel_menu_hints'), 2)
+
+    def test_keyboard_hint_does_not_replace_date_or_survey_buttons(self):
+        self.assertNotIn('рядом с полем ввода нажмите кнопку', self.send('Гамлет').reply.text)
+        intro = self.send('Анкета интересов')
+        self.assertNotIn('рядом с полем ввода нажмите кнопку', intro.reply.text)
+        self.assertEqual(self.count('channel_menu_hints'), 0)
+        self.click(intro, 'Пропустить')
+        self.assertIn('рядом с полем ввода нажмите кнопку', self.send('Здравствуйте').reply.text)
+
+    def test_keyboard_hint_does_not_append_to_stop(self):
+        self.assertNotIn('рядом с полем ввода нажмите кнопку', self.send('Стоп').reply.text)
+        self.assertEqual(self.count('channel_menu_hints'), 0)
+
 if __name__ == '__main__':
     unittest.main()

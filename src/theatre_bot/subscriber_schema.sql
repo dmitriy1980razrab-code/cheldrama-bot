@@ -214,3 +214,9 @@ CREATE TABLE IF NOT EXISTS interest_survey_state (
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_interest_survey_expiry ON interest_survey_state(expires_at);
+
+
+CREATE TABLE IF NOT EXISTS channel_menu_hints (
+    actor_hash TEXT PRIMARY KEY,
+    shown_at TEXT NOT NULL
+);
