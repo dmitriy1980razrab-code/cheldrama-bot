@@ -303,6 +303,7 @@ def deliver_persistent_replies(
     now: datetime | None = None,
     *, theatre_connection: sqlite3.Connection | None = None,
 ) -> PersistentDeliveryReport:
+    purge_delivered_reply_payloads(connection, now=now)
     sent = 0
     failed = 0
     cancelled = 0
@@ -576,3 +577,18 @@ class PersistentReplyExecutor:
             return False
         finally:
             connection.close()
+
+
+def purge_delivered_reply_payloads(connection, now=None):
+    """Forget finished message bodies after three days; keep deduplication keys."""
+    moment = now or datetime.now(timezone.utc)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    cutoff = _timestamp(moment - timedelta(days=3))
+    with _transaction(connection):
+        cursor = connection.execute("""
+            UPDATE outgoing_reply_queue SET payload_encrypted = X''
+            WHERE status IN ('sent', 'cancelled') AND length(payload_encrypted) > 0
+              AND julianday(COALESCE(sent_at, last_attempt_at, created_at)) < julianday(?)
+        """, (cutoff,))
+    return cursor.rowcount

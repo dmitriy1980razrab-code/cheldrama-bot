@@ -50,6 +50,7 @@ def initialize(connection: sqlite3.Connection) -> None:
             "ALTER TABLE plays ADD COLUMN catalog_kind TEXT NOT NULL DEFAULT 'affiche'"
         )
     seed_templates(connection)
+    purge_unrecognized_requests(connection)
     connection.commit()
 
 
@@ -432,10 +433,11 @@ def log_unrecognized_request(
     channel: str = "local",
 ) -> None:
     stored_text = text
-    if channel == "site":
+    if channel in {"site", "vk", "max"}:
         normalized = _normalize(text)
         fingerprint = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:24]
         stored_text = f"fingerprint:{fingerprint}"
+    purge_unrecognized_requests(connection)
     with connection:
         connection.execute(
             """
@@ -444,3 +446,20 @@ def log_unrecognized_request(
             """,
             (channel, stored_text, _now()),
         )
+
+
+def purge_unrecognized_requests(connection, now=None):
+    """Retain diagnostics for three days, without keeping remote users' text."""
+    moment = now or datetime.now(timezone.utc)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    cutoff = (moment - timedelta(days=3)).isoformat(timespec="seconds")
+    with connection:
+        connection.execute("DELETE FROM unrecognized_requests WHERE julianday(created_at) < julianday(?)", (cutoff,))
+        rows = connection.execute(
+            "SELECT id, text FROM unrecognized_requests WHERE channel IN ('site','vk','max') AND text NOT LIKE 'fingerprint:%'"
+        ).fetchall()
+        for row in rows:
+            fingerprint = hashlib.sha256(_normalize(row["text"]).encode("utf-8")).hexdigest()[:24]
+            connection.execute("UPDATE unrecognized_requests SET text=? WHERE id=?",
+                               ("fingerprint:" + fingerprint, row["id"]))
