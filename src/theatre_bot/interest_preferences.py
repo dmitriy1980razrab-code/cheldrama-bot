@@ -86,3 +86,31 @@ def save_preferences(db, theatre, protector, channel, external_id, display_name,
         db.rollback()
         raise
     return subscriber_id
+
+
+def delete_preferences(db, protector, channel, external_id, document_version,
+                       survey_actor, survey_token, now=None):
+    """Delete survey interests and revoke advertising atomically, with stale-button protection."""
+    db.execute('BEGIN IMMEDIATE')
+    try:
+        state = db.execute('SELECT stage, payload_encrypted, expires_at FROM interest_survey_state WHERE actor_hash=?', (survey_actor,)).fetchone()
+        if (not state or state['stage'] != 'delete_confirm' or not state['payload_encrypted']
+                or state['expires_at'] <= _timestamp(now)
+                or json.loads(protector.decrypt(state['payload_encrypted'])).get('token') != survey_token):
+            raise LookupError('questionnaire is stale')
+        row = db.execute('SELECT id FROM subscribers WHERE channel=? AND external_id_hash=?',
+                         (channel, protector.lookup_hash(channel, external_id))).fetchone()
+        stamp = _timestamp(now)
+        if row:
+            db.execute("DELETE FROM preferences WHERE subscriber_id=? AND source='interest_survey'", (row['id'],))
+            db.execute('UPDATE subscribers SET interested_in_premieres=0, updated_at=? WHERE id=?', (stamp, row['id']))
+            db.execute("""INSERT INTO consent_events
+                (subscriber_id, consent_type, action, document_version, source, recorded_at)
+                VALUES (?, 'marketing', 'revoked', ?, 'interest_survey', ?)""",
+                (row['id'], document_version, stamp))
+        db.execute("""UPDATE interest_survey_state SET stage='closed', payload_encrypted=NULL,
+            next_offer_at=NULL, decline_count=0, updated_at=? WHERE actor_hash=?""", (stamp, survey_actor))
+        db.commit()
+    except BaseException:
+        db.rollback()
+        raise

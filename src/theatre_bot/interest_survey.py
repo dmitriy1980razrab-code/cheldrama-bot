@@ -9,7 +9,7 @@ from theatre_bot.channels import OutgoingButton, OutgoingMessage
 from theatre_bot.dialog import Reply
 from theatre_bot.notifications import THEATRE_TIMEZONE
 from theatre_bot.interest_preferences import (genre_options, artist_options, current_preferences,
-    personal_data_granted, save_preferences)
+    personal_data_granted, save_preferences, delete_preferences)
 from theatre_bot.spam_protection import normalize_message
 from theatre_bot.subscribers import record_consent, _timestamp
 from theatre_bot.subscription_flow import DOCUMENT_VERSIONS, legal_documents_reply
@@ -57,12 +57,14 @@ class InterestSurvey:
 
     def close(self, message, now=None):
         with self.db:
-            self.db.execute("UPDATE interest_survey_state SET stage='closed', payload_encrypted=NULL, next_offer_at=?, updated_at=? WHERE actor_hash=?", (_timestamp(next_month(self._now(now).astimezone(THEATRE_TIMEZONE))), _timestamp(now), self._actor(message)))
+            self.db.execute("UPDATE interest_survey_state SET stage='closed', payload_encrypted=NULL, next_offer_at=NULL, updated_at=? WHERE actor_hash=?", (_timestamp(now), self._actor(message)))
 
     def valid_cancel(self, message, now=None):
         state = self._load(message, now)
         return bool(state and (
             message.action == f"survey:{state[1]['token']}:cancel"
+            or (state[0] in {'intro','sections'} and message.action == f"survey:{state[1]['token']}:delete")
+            or (state[0]=='delete_confirm' and message.action == f"survey:{state[1]['token']}:delete_yes")
             or (not message.action and normalize_message(message.text)=='отмена' and state[0]!='offered')
         ))
 
@@ -77,50 +79,28 @@ class InterestSurvey:
     def decline(self, message, now=None):
         self.close(message, now)
         with self.db:
-            self.db.execute('UPDATE interest_survey_state SET decline_count=decline_count+1 WHERE actor_hash=?', (self._actor(message),))
-            # A discarded, never-activated survey profile does not need a stored delivery ID/name.
             self.db.execute("""UPDATE subscribers SET external_id_encrypted=NULL, display_name_encrypted=NULL
                 WHERE channel=? AND external_id_hash=? AND status='pending'
                   AND NOT EXISTS(SELECT 1 FROM preferences p WHERE p.subscriber_id=subscribers.id)
                   AND NOT EXISTS(SELECT 1 FROM subscriptions s WHERE s.subscriber_id=subscribers.id AND s.status='active')""",
                 (message.channel, self.protector.lookup_hash(message.channel, message.external_user_id)))
-        row = self.db.execute('SELECT decline_count FROM interest_survey_state WHERE actor_hash=?', (self._actor(message),)).fetchone()
-        if row and row['decline_count']>=3:
-            data = {}
-            self._save(message, 'decline_options', data, now)
-            return self._reply(message, data,
-                'Новые ответы не сохранены. Больше не предлагать анкету? Открыть её самостоятельно можно в любой момент.',
-                [('never','Больше не предлагать'),('later','Напомнить через месяц')])
-        return self._menu_reply(message,
-            'Новые ответы не сохранены. Прежние настройки не изменены. Через месяц при Вашем обращении можем снова предложить анкету.')
+        return self._menu_reply(message, 'Новые ответы не сохранены. Прежние настройки не изменены.')
 
     def offer(self, message, outgoing, now=None):
-        if message.action or outgoing.buttons or outgoing.reply.choices or normalize_message(message.text) in OPEN_COMMANDS | {'отписаться','отписаться от всех','стоп','stop'}:
-            return outgoing
-        if outgoing.reply.text.startswith(('Слишком много сообщений', 'Сообщение слишком длинное')):
-            return outgoing
-        self._load(message, now)
-        row = self.db.execute('SELECT * FROM interest_survey_state WHERE actor_hash=?', (self._actor(message),)).fetchone()
-        if row and (row['never_offer'] or row['stage']=='completed' or not row['next_offer_at'] or row['next_offer_at']>_timestamp(now)):
-            if not outgoing.buttons:
-                return replace(outgoing, buttons=(OutgoingButton('survey:open','Анкета интересов'),), keyboard_inline=message.channel!='vk')
-            return outgoing
-        data = {}
-        self._save(message, 'offered', data, now)
-        with self.db:
-            self.db.execute('UPDATE interest_survey_state SET next_offer_at=? WHERE actor_hash=?',
-                (_timestamp(next_month(self._now(now).astimezone(THEATRE_TIMEZONE))), self._actor(message)))
-        extra = self._reply(message, data, '', [('open','Анкета интересов'),('cancel','Пропустить анкету')]).buttons
-        return replace(outgoing, reply=replace(outgoing.reply, text=outgoing.reply.text+'\n\nХотите настроить интересы?'),
-                       buttons=outgoing.buttons+extra)
+        # Manual entry only. Do not create drafts or repeat invitations.
+        if (not message.action and not outgoing.buttons
+                and not outgoing.reply.choices
+                and not outgoing.reply.text.startswith(('Слишком много сообщений', 'Сообщение слишком длинное'))):
+            return replace(outgoing, buttons=(OutgoingButton('survey:open', 'Анкета интересов'),), keyboard_inline=message.channel!='vk')
+        return outgoing
 
     def start(self, message, now=None):
         data = {}
         self._save(message, 'intro', data, now)
         return self._reply(message, data,
             'Выберите жанры, любимых артистов и интерес к премьерам, чтобы театр мог предлагать подходящие спектакли, акции и приглашения. '
-            'Анкета добровольная, вопросы можно пропустить, ответы — изменить. Разрешение на рекламу запрашивается отдельно.',
-            [('begin','Начать'),('legal','Правовые документы'),('cancel','Пропустить')])
+            'Анкета добровольная, вопросы можно пропустить, ответы — изменить или удалить. Разрешение на рекламу запрашивается отдельно.',
+            [('begin','Начать'),('delete','Удалить данные анкеты'),('legal','Правовые документы'),('cancel','Пропустить')])
 
     def _begin_choices(self, message, now):
         data = current_preferences(self.db, self.protector, message.channel, message.external_user_id)
@@ -136,7 +116,7 @@ class InterestSurvey:
             f'Анкета интересов. Выберите раздел, который хотите заполнить или изменить.\n'
             f'Жанры: {genres}.\nАртисты: {artists}.\nПремьеры: {premieres}.\n'
             'Любой раздел можно оставить без выбора. Для выхода напишите «Отмена».',
-            [('genres','Жанры'),('artists','Артисты'),('premieres','Премьеры'),('finish','Завершить анкету')])
+            [('genres','Жанры'),('artists','Артисты'),('premieres','Премьеры'),('finish','Завершить анкету'),('delete','Удалить данные анкеты')])
 
     def _premieres(self, message, data, now):
         self._save(message, 'premieres', data, now)
@@ -164,6 +144,7 @@ class InterestSurvey:
         buttons = [(f'toggle:{i}', ('✓ ' if v['key'] in selected else '')+v['label'][:35]) for i, v in enumerate(visible)]
         if page_count>1:
             buttons.append(('page', 'Ещё жанры' if stage=='genres' else 'Ещё артисты'))
+        buttons.append(('clear', 'Снять все отметки'))
         buttons.append(('next', 'К разделам анкеты'))
         heading = 'Какие жанры Вам интересны?' if stage=='genres' else 'Кого из артистов Вы хотели бы видеть на сцене?\nМожно ввести фамилию для поиска; «Все артисты» — вернуть список.'
         all_options = data['genre_options' if stage=='genres' else 'artist_options']
@@ -200,12 +181,26 @@ class InterestSurvey:
         action = message.action.split(':', 2)[2]
         if action=='cancel':
             return self.decline(message, now)
+        if action=='delete' and stage in {'intro','sections'}:
+            self._save(message, 'delete_confirm', {}, now)
+            _, confirmation = self._load(message, now)
+            return self._reply(message, confirmation,
+                'Удалить все данные анкеты: жанры, артистов и интерес к премьерам? '
+                'Согласие на рекламные сообщения будет отозвано. Подписки на показы сохранятся.',
+                [('delete_yes','Да, удалить'),('delete_back','Не удалять')])
+        if stage=='delete_confirm' and action=='delete_back':
+            return self.start(message, now)
+        if stage=='delete_confirm' and action=='delete_yes':
+            try:
+                delete_preferences(self.db, self.protector, message.channel, message.external_user_id,
+                    DOCUMENT_VERSIONS['marketing'], self._actor(message), data['token'], now=now)
+            except LookupError:
+                return self._menu_reply(message, 'Кнопка устарела. Откройте анкету заново.')
+            return self._menu_reply(message,
+                'Данные анкеты удалены. Согласие на рекламные сообщения отозвано. Подписки на показы сохранены.')
         if stage=='decline_options' and action in {'never','later'}:
             self.close(message, now)
-            if action=='never':
-                with self.db:
-                    self.db.execute('UPDATE interest_survey_state SET never_offer=1 WHERE actor_hash=?', (self._actor(message),))
-            return self._menu_reply(message, 'Больше не будем предлагать анкету.' if action=='never' else 'Предложим снова через месяц при Вашем обращении.')
+            return self._menu_reply(message, 'Автоматические предложения анкеты отключены. Открыть её можно самостоятельно.')
         if action=='legal' and stage in {'intro','consent'}:
             return self._reply(message, data, legal_documents_reply().text, [('back','Назад'),('cancel','Отмена')])
         if action=='back' and stage in {'intro','consent'}:
@@ -231,6 +226,9 @@ class InterestSurvey:
         if stage=='marketing' and action=='sections':
             return self._sections(message, data, now)
         if stage in {'genres','artists'}:
+            if action=='clear':
+                data[stage] = []
+                return self._choices(message, stage, data, now)
             if action.startswith('toggle:'):
                 try:
                     index = int(action.split(':')[1])

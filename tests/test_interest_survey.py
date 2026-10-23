@@ -86,14 +86,11 @@ class InterestSurveyTests(unittest.TestCase):
         again = self.send('Здравствуйте')
         self.assertNotIn('Пропустить анкету', [b.label for b in again.buttons])
 
-    def test_invitation_skip_persists_after_restart_without_profile(self):
-        first = self.send('Здравствуйте')
-        self.click(first, 'Пропустить анкету')
-        self.db.close()
-        self.db = connect_subscribers(self.root/'subscribers.sqlite3')
-        initialize_subscribers(self.db)
+    def test_manual_menu_does_not_create_draft_after_restart(self):
+        self.send('Здравствуйте')
         self.handler = self.make_handler()
-        self.assertNotIn('Анкета интересов', [b.label for b in self.send('Гамлет').buttons])
+        self.send('Здравствуйте')
+        self.assertEqual(self.count('interest_survey_state'), 0)
         self.assertEqual(self.count('subscribers'), 0)
         self.assertIn('Начать', [b.label for b in self.send('Анкета интересов').buttons])
 
@@ -291,7 +288,7 @@ class InterestSurveyTests(unittest.TestCase):
         chosen = reply.buttons[0].label
         reply = self.click(reply, chosen)
         for _ in range(3):
-            self.assertLessEqual(len(reply.buttons), 5)
+            self.assertLessEqual(len(reply.buttons), 6)
             reply = self.click(reply, 'Ещё артисты')
         self.assertIn(chosen, reply.reply.text)
 
@@ -366,43 +363,31 @@ class InterestSurveyTests(unittest.TestCase):
         self.assertEqual(self.db.execute("SELECT count(*) FROM consent_events WHERE consent_type='marketing' AND action='granted'").fetchone()[0], 0)
         self.assertIsNone(self.db.execute('SELECT payload_encrypted FROM interest_survey_state').fetchone()[0])
 
-    def test_invitation_returns_only_after_calendar_month_and_new_question(self):
-        first = self.send('Здравствуйте')
-        self.click(first, 'Пропустить анкету')
-        self.now = self.now.replace(month=11, day=21)
-        self.assertNotIn('Хотите настроить интересы?', self.send('Здравствуйте').reply.text)
-        self.now = self.now.replace(day=22)
+    def test_no_invitation_after_calendar_month(self):
+        self.click(self.send('Анкета интересов'), 'Пропустить')
+        self.now += timedelta(days=65)
         result = self.send('Здравствуйте')
-        self.assertIn('Хотите настроить интересы?', result.reply.text)
-        self.assertIn('Анкета интересов', [b.label for b in result.buttons])
+        self.assertNotIn('Хотите настроить интересы?', result.reply.text)
+        self.assertNotIn('Пропустить анкету', [b.label for b in result.buttons])
 
-    def test_third_decline_offers_permanent_opt_out(self):
-        for number in range(3):
-            intro = self.send('Анкета интересов')
-            result = self.click(intro, 'Пропустить')
-            if number<2:
-                self.assertNotIn('Больше не предлагать', [b.label for b in result.buttons])
-        self.assertIn('Больше не предлагать', [b.label for b in result.buttons])
-        self.assertEqual(self.db.execute('SELECT decline_count FROM interest_survey_state').fetchone()[0], 3)
-        self.click(result, 'Больше не предлагать')
-        self.now += timedelta(days=120)
-        self.assertNotIn('Хотите настроить интересы?', self.send('Здравствуйте').reply.text)
-        self.assertIn('Начать', [b.label for b in self.send('Анкета интересов').buttons])
-
-    def test_third_decline_can_keep_monthly_reminder(self):
+    def test_repeated_cancellation_never_offers_reminders(self):
         for _ in range(3):
             result = self.click(self.send('Анкета интересов'), 'Пропустить')
-        self.click(result, 'Напомнить через месяц')
-        self.now = self.now.replace(month=11)
-        self.assertIn('Хотите настроить интересы?', self.send('Здравствуйте').reply.text)
-        self.assertEqual(self.db.execute('SELECT never_offer FROM interest_survey_state').fetchone()[0], 0)
+            self.assertNotIn('месяц', result.reply.text)
+            self.assertEqual([b.label for b in result.buttons], ['Анкета интересов'])
+
+    def test_legacy_due_reminder_is_ignored(self):
+        self.click(self.send('Анкета интересов'), 'Пропустить')
+        with self.db:
+            self.db.execute("UPDATE interest_survey_state SET next_offer_at='2020-01-01T00:00:00+00:00'")
+        self.assertNotIn('Хотите настроить интересы?', self.send('Здравствуйте').reply.text)
 
     def test_repeated_decline_button_counts_once(self):
         intro = self.send('Анкета интересов')
         action = next(b.action for b in intro.buttons if b.label=='Пропустить')
         self.send(action=action)
         self.send(action=action)
-        self.assertEqual(self.db.execute('SELECT decline_count FROM interest_survey_state').fetchone()[0], 1)
+        self.assertEqual(self.db.execute('SELECT decline_count FROM interest_survey_state').fetchone()[0], 0)
 
     def test_calendar_month_handles_year_and_short_month(self):
         from theatre_bot.interest_survey import next_month
@@ -448,7 +433,7 @@ class InterestSurveyTests(unittest.TestCase):
     def test_section_menu_allows_any_order_and_edit_before_saving(self):
         genres = self.genres()
         menu = self.click(genres, 'К разделам анкеты')
-        self.assertEqual([b.label for b in menu.buttons], ['Жанры','Артисты','Премьеры','Завершить анкету'])
+        self.assertEqual([b.label for b in menu.buttons], ['Жанры','Артисты','Премьеры','Завершить анкету','Удалить данные анкеты'])
         menu = self.click(self.click(menu, 'Премьеры'), 'Да')
         artists = self.click(menu, 'Артисты')
         artists = self.click(artists, 'Анна Иванова')
@@ -480,10 +465,102 @@ class InterestSurveyTests(unittest.TestCase):
         self.assertEqual(result, outgoing)
         self.assertEqual(self.count('interest_survey_state'), 0)
 
-    def test_invitation_skip_label_is_explicit(self):
+    def test_first_message_has_only_manual_vk_keyboard(self):
         reply = self.send('Здравствуйте')
-        self.assertIn('Пропустить анкету', [b.label for b in reply.buttons])
-        self.assertNotIn('Пропустить', [b.label for b in reply.buttons])
+        self.assertEqual([b.label for b in reply.buttons], ['Анкета интересов'])
+        self.assertFalse(reply.keyboard_inline)
+        self.assertNotIn('Хотите настроить интересы?', reply.reply.text)
+        self.assertEqual(self.count('interest_survey_state'), 0)
+
+
+    def test_delete_interests_revokes_marketing_preserves_service(self):
+        self.finish()
+        record_consent(self.db, self.protector, self.channel, self.user, 'service_notifications', 'v1', True, 'test', at=self.now)
+        subscribe_to_play(self.db, self.protector, self.channel, self.user, 'play', 'Спектакль', at=self.now)
+        before = [tuple(r) for r in self.db.execute('SELECT * FROM subscriptions')]
+        confirmation = self.click(self.send('Анкета интересов'), 'Удалить данные анкеты')
+        self.assertGreater(self.count('preferences'), 0)
+        result = self.click(confirmation, 'Да, удалить')
+        self.assertIn('Данные анкеты удалены', result.reply.text)
+        profile = subscriber_profile(self.db, self.protector, 1, 'admin', 'test')
+        self.assertFalse(profile.consents['marketing'])
+        self.assertTrue(profile.consents['service_notifications'])
+        self.assertTrue(profile.consents['personal_data'])
+        self.assertFalse(profile.interested_in_premieres)
+        self.assertFalse(any(kind in {'genre','artist'} for kind,_ in profile.preferences))
+        self.assertEqual([tuple(r) for r in self.db.execute('SELECT * FROM subscriptions')], before)
+        self.assertIsNone(self.db.execute('SELECT payload_encrypted FROM interest_survey_state').fetchone()[0])
+
+    def test_delete_cancel_and_expired_button_preserve_interests(self):
+        self.finish()
+        before = [tuple(r) for r in self.db.execute('SELECT * FROM preferences')]
+        confirmation = self.click(self.send('Анкета интересов'), 'Удалить данные анкеты')
+        self.click(confirmation, 'Не удалять')
+        self.click(confirmation, 'Да, удалить')
+        self.assertEqual([tuple(r) for r in self.db.execute('SELECT * FROM preferences')], before)
+        confirmation = self.click(self.send('Анкета интересов'), 'Удалить данные анкеты')
+        self.now += timedelta(minutes=31)
+        self.click(confirmation, 'Да, удалить')
+        self.assertEqual([tuple(r) for r in self.db.execute('SELECT * FROM preferences')], before)
+
+    def test_selected_genre_and_artist_can_be_removed_and_saved(self):
+        self.finish()
+        reply = self.genres()
+        reply = self.click(reply, '✓ Драма')
+        reply = self.click(self.click(reply, 'К разделам анкеты'), 'Артисты')
+        reply = self.click(reply, '✓ Анна Иванова')
+        reply = self.click(self.click(reply, 'К разделам анкеты'), 'Премьеры')
+        reply = self.click(self.click(reply, 'Нет'), 'Завершить анкету')
+        self.click(reply, 'Сохранить')
+        self.assertEqual(self.db.execute("SELECT count(*) FROM preferences WHERE source='interest_survey'").fetchone()[0], 0)
+        self.assertEqual(self.db.execute('SELECT interested_in_premieres FROM subscribers').fetchone()[0], 0)
+
+    def test_delete_cannot_target_another_user(self):
+        self.finish()
+        confirmation = self.click(self.send('Анкета интересов'), 'Удалить данные анкеты')
+        before = self.count('preferences')
+        self.user = '456'
+        self.click(confirmation, 'Да, удалить')
+        self.assertEqual(self.count('preferences'), before)
+
+    def test_delete_without_profile_does_not_create_one(self):
+        reply = self.click(self.send('Анкета интересов'), 'Удалить данные анкеты')
+        self.click(reply, 'Да, удалить')
+        self.assertEqual(self.count('subscribers'), 0)
+
+
+    def test_clear_section_removes_even_inactive_selected_artist(self):
+        self.finish()
+        with self.theatre:
+            self.theatre.execute("UPDATE artists SET is_active=0 WHERE source_url='artist-1'")
+        reply = self.genres()
+        reply = self.click(reply, 'Снять все отметки')
+        reply = self.click(self.click(reply, 'К разделам анкеты'), 'Артисты')
+        reply = self.click(reply, 'Снять все отметки')
+        final = self.click(self.click(reply, 'К разделам анкеты'), 'Завершить анкету')
+        self.click(final, 'Сохранить')
+        self.assertEqual(self.db.execute("SELECT count(*) FROM preferences WHERE source='interest_survey'").fetchone()[0], 0)
+
+    def test_max_manual_button_has_no_invitation_or_draft(self):
+        self.channel = 'max'
+        reply = self.send('Здравствуйте')
+        self.assertEqual([b.label for b in reply.buttons], ['Анкета интересов'])
+        self.assertTrue(reply.keyboard_inline)
+        self.assertNotIn('Хотите настроить интересы?', reply.reply.text)
+        self.assertEqual(self.count('interest_survey_state'), 0)
+
+    def test_delete_rolls_back_when_revocation_fails(self):
+        import sqlite3
+        self.finish()
+        reply = self.click(self.send('Анкета интересов'), 'Удалить данные анкеты')
+        before = [tuple(r) for r in self.db.execute('SELECT * FROM preferences')]
+        with self.db:
+            self.db.execute("CREATE TRIGGER fail_delete BEFORE INSERT ON consent_events WHEN NEW.action='revoked' BEGIN SELECT RAISE(ABORT,'test failure'); END")
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.click(reply, 'Да, удалить')
+        self.assertEqual([tuple(r) for r in self.db.execute('SELECT * FROM preferences')], before)
+        self.assertEqual(self.db.execute('SELECT interested_in_premieres FROM subscribers').fetchone()[0], 1)
+        self.assertEqual(self.db.execute('SELECT stage FROM interest_survey_state').fetchone()[0], 'delete_confirm')
 
 if __name__ == '__main__':
     unittest.main()
