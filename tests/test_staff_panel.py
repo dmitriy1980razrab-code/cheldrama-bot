@@ -467,3 +467,22 @@ class PanelHttpTests(StaffTests):
         for role in ('analytics','observer','support'):
             self.login(role)
             self.assertEqual(self.request('/audience')[0],403)
+
+    def test_login_page_preserves_origin_for_own_forms(self):
+        with self.client.open(self.url+'/login',timeout=5) as response:
+            self.assertEqual(response.headers.get('Referrer-Policy'),'same-origin')
+        request=Request(self.url+'/login',data=urlencode({'username':'advertising','password':'strong-password-123'}).encode(),
+                        headers={'Origin':self.url})
+        with self.client.open(request,timeout=5) as response:
+            self.assertEqual(response.status,200)
+            self.assertIn('Реклама / администратор',response.read().decode())
+        self.assertTrue(any(cookie.name=='staff_session' for cookie in self.cookies))
+
+    def test_login_still_rejects_foreign_and_null_origins(self):
+        for origin in ('null','https://foreign.example'):
+            request=Request(self.url+'/login',data=urlencode({'username':'advertising','password':'strong-password-123'}).encode(),
+                            headers={'Origin':origin})
+            with self.assertRaises(HTTPError) as caught:
+                self.client.open(request,timeout=5)
+            self.assertEqual(caught.exception.code,403)
+        self.assertEqual(len(self.security.sessions),0)

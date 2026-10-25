@@ -177,7 +177,7 @@ def create_panel_handler(database_path,theatre_path,protector,security,*,campaig
         def send(self,status,body,cookie=None,mime='text/html; charset=utf-8'):
             self.send_response(status)
             for key,value in [('Content-Type',mime),('Content-Length',str(len(body))),('Cache-Control','no-store'),
-                ('X-Content-Type-Options','nosniff'),('X-Frame-Options','DENY'),('Referrer-Policy','no-referrer'),
+                ('X-Content-Type-Options','nosniff'),('X-Frame-Options','DENY'),('Referrer-Policy','same-origin'),
                 ('Content-Security-Policy',"default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")]:
                 self.send_header(key,value)
             if cookie: self.send_header('Set-Cookie',cookie)
