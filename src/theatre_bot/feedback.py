@@ -50,6 +50,17 @@ class FeedbackFlow:
         return self.reply(m,'Выберите тему обращения. Ответ сотрудника придёт в этот чат.',token,
                           list(DEPARTMENTS.items())+[('back','Вернуться к боту')])
 
+    def begin_writing(self,m,department,now=None,ticket_id=None):
+        known=self.db.execute('SELECT display_name_encrypted FROM subscribers WHERE channel=? AND external_id_hash=?',
+            (m.channel,self.protector.lookup_hash(m.channel,m.external_user_id))).fetchone()
+        if department in DEPARTMENTS and not m.display_name and not (known and known['display_name_encrypted']):
+            token=self.set_state(m,'name',now,department,ticket_id)
+            return self.reply(m,'Как к Вам обращаться? Напишите имя (до 120 символов) или «Пропустить». '
+                'После этого можно будет написать вопрос сотруднику.',token,[('back','Вернуться к боту')])
+        token=self.set_state(m,'writing',now,department,ticket_id)
+        return self.reply(m,'Напишите Ваш вопрос. Следующие сообщения будут передаваться сотруднику, '
+            'пока Вы не нажмёте «Вернуться к боту» (или 30 минут не будете писать).',token,[('back','Вернуться к боту')])
+
     def protected(self,m,now=None):
         state=self.state(m,now)
         return bool(state and (m.action==f"feedback:{state['token']}:back" or
@@ -92,16 +103,27 @@ class FeedbackFlow:
                     return self.reply(m,'Для передачи сообщения сотруднику нужно согласие на обработку персональных данных. '
                         'Рекламное согласие не требуется.\n\n'+legal_documents_reply().text,token,
                         [('accept','Согласен'),('back','Вернуться к боту')])
-                token=self.set_state(m,'writing',now,action)
-                return self.reply(m,'Напишите Ваш вопрос. Следующие сообщения будут передаваться сотруднику, '
-                    'пока Вы не нажмёте «Вернуться к боту» (или 30 минут не будете писать).',token,[('back','Вернуться к боту')])
+                return self.begin_writing(m,action,now)
             if state['stage']=='consent' and action=='accept':
                 record_consent(self.db,self.protector,m.channel,m.external_user_id,'personal_data',
                     DOCUMENT_VERSIONS['personal_data'],True,'feedback',at=now,display_name=m.display_name)
-                token=self.set_state(m,'writing',now,state['department'])
-                return self.reply(m,'Напишите Ваш вопрос сотруднику. Для обычных вопросов боту нажмите «Вернуться к боту».',
-                                  token,[('back','Вернуться к боту')])
+                return self.begin_writing(m,state['department'],now)
             return self.reply(m,'Действие недоступно. Откройте «Обратная связь» заново.')
+        if state and state['stage']=='name' and not m.action:
+            if text in {'анкета интересов','мои интересы','интересы','изменить интересы'}:
+                self.close(m)
+                return None
+            if not personal_data_granted(self.db,self.protector,m.channel,m.external_user_id):
+                self.close(m)
+                return self.menu(m,now)
+            name=m.text.strip()
+            if not name or len(name)>120:
+                return self.reply(m,'Напишите имя длиной до 120 символов или «Пропустить».',state['token'],[('back','Вернуться к боту')])
+            if text!='пропустить':
+                with self.db:
+                    _get_or_create_subscriber(self.db,self.protector,m.channel,m.external_user_id,now,name)
+            token=self.set_state(m,'writing',now,state['department'],state['ticket_id'])
+            return self.reply(m,'Теперь напишите Ваш вопрос сотруднику. Для выхода нажмите «Вернуться к боту».',token,[('back','Вернуться к боту')])
         if not state or state['stage']!='writing' or m.action:
             return None
         # Other explicit bot commands always leave the staff conversation.

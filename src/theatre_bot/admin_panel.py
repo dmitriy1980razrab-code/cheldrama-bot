@@ -270,6 +270,13 @@ def create_panel_handler(database_path,theatre_path,protector,security,*,campaig
                 if path=='/ticket':
                     tid=int(query.get('id','0'));ticket=authorized_ticket(db,user,tid)
                     body=f'<h2>Обращение №{tid} · {esc(DEPARTMENTS[ticket["department"]])}</h2><p>Статус: {esc(STATUS_NAMES.get(ticket["status"],ticket["status"]))}</p>'
+                    if user['role'] in ROLE_DEPARTMENTS:
+                        author=db.execute('SELECT display_name_encrypted,channel FROM subscribers WHERE id=?',(ticket['subscriber_id'],)).fetchone()
+                        name=protector.decrypt(author['display_name_encrypted']) if author['display_name_encrypted'] else 'Имя не указано'
+                        body+='<p>Автор: <strong>'+esc(name)+'</strong> · '+esc(author['channel'].upper())+'</p>'
+                        with db:
+                            db.execute("INSERT INTO subscriber_access_log(subscriber_id,admin_actor,action,purpose,accessed_at) VALUES(?,?,'view_profile',?,?)",
+                                (ticket['subscriber_id'],user['username'],f'feedback_ticket:{tid}:name',stamp()))
                     for m in db.execute('SELECT m.*,u.username,q.status AS delivery_status,q.failure_reason AS delivery_error FROM feedback_messages m LEFT JOIN admin_users u ON u.id=m.staff_id LEFT JOIN outgoing_reply_queue q ON q.id=m.outgoing_queue_id WHERE ticket_id=? ORDER BY m.id',(tid,)):
                         body+=f'<section class="box"><b>{esc(m["username"] or "Зритель")}</b> · {esc(m["created_at"])}<pre style="white-space:pre-wrap">{esc(protector.decrypt(m["body_encrypted"]) if m["body_encrypted"] else "Содержимое удалено по сроку хранения")}</pre></section>'
                         if m['direction']=='outgoing':
@@ -362,6 +369,8 @@ def create_panel_handler(database_path,theatre_path,protector,security,*,campaig
                     else:raise ValueError()
                     with db:audit(db,user['username'],'campaign_'+action,cid)
                     self.redirect('/campaigns');return
+                if path.startswith('/ticket/') and path not in {'/ticket/reply','/ticket/take','/ticket/close','/ticket/transfer'}:
+                    raise PermissionError()
                 if path.startswith('/ticket/'):
                     tid=int(values.get('id','0'));action=path.split('/')[-1]
                     if action=='reply':staff_reply(db,protector,user,tid,values.get('message',''),values.get('request_token',''))

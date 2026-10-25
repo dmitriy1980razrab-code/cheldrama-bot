@@ -304,6 +304,44 @@ class StaffTests(unittest.TestCase):
         self.assertEqual(len(sender.messages),1)
         worker.close()
 
+    def test_vk_name_is_requested_once_without_creating_ticket_for_name(self):
+        record_consent(self.db,self.protector,'vk','nameless','personal_data','draft-v1',True,'test',at=self.now)
+        counter=0
+        def send(text='',action=None):
+            nonlocal counter
+            counter+=1
+            return self.flow.try_handle(IncomingMessage('vk','nameless','name-'+str(counter),text,None,action),self.now)
+        menu=send(action='feedback:open')
+        prompt=send(action=next(b.action for b in menu.buttons if b.label=='Техподдержка'))
+        self.assertIn('Как к Вам обращаться',prompt.reply.text)
+        send('Алексей')
+        self.assertEqual(self.db.execute('SELECT count(*) FROM feedback_tickets').fetchone()[0],0)
+        row=self.db.execute("SELECT display_name_encrypted FROM subscribers WHERE external_id_hash=?",(self.protector.lookup_hash('vk','nameless'),)).fetchone()
+        self.assertEqual(self.protector.decrypt(row[0]),'Алексей')
+        send('Не работает кнопка')
+        self.assertEqual(self.db.execute('SELECT count(*) FROM feedback_messages').fetchone()[0],1)
+        menu=send(action='feedback:open')
+        prompt=send(action=next(b.action for b in menu.buttons if b.label=='Техподдержка'))
+        self.assertNotIn('Как к Вам обращаться',prompt.reply.text)
+
+    def test_viewer_may_skip_name(self):
+        record_consent(self.db,self.protector,'vk','nameless','personal_data','draft-v1',True,'test',at=self.now)
+        menu=self.flow.try_handle(IncomingMessage('vk','nameless','s1','',None,'feedback:open'),self.now)
+        self.flow.try_handle(IncomingMessage('vk','nameless','s2','',None,next(b.action for b in menu.buttons if b.label=='Техподдержка')),self.now)
+        self.flow.try_handle(IncomingMessage('vk','nameless','s3','Пропустить'),self.now)
+        reply=self.flow.try_handle(IncomingMessage('vk','nameless','s4','Вопрос'),self.now)
+        self.assertIn('Обращение №',reply.reply.text)
+
+    def test_name_prompt_is_available_for_every_feedback_department(self):
+        for index,department in enumerate(('advertising','social','technical')):
+            visitor='visitor-'+str(index)
+            record_consent(self.db,self.protector,'vk',visitor,'personal_data','draft-v1',True,'test',at=self.now)
+            menu=self.flow.try_handle(IncomingMessage('vk',visitor,'prompt1','',None,'feedback:open'),self.now)
+            action=next(b.action for b in menu.buttons if b.label=={'advertising':'Реклама, акции','social':'Соц.сети','technical':'Техподдержка'}[department])
+            reply=self.flow.try_handle(IncomingMessage('vk',visitor,'prompt2','',None,action),self.now)
+            self.assertIn('Как к Вам обращаться',reply.reply.text)
+            self.assertNotIn('вопрос техподдержке',reply.reply.text)
+
 class PanelHttpTests(StaffTests):
     # HTTP requests use separate connections, as in the actual loopback server.
     def setUp(self):
@@ -376,3 +414,56 @@ class PanelHttpTests(StaffTests):
         self.assertEqual(self.db.execute('SELECT count(*) FROM outgoing_reply_queue').fetchone()[0],1)
         self.request('/ticket/reply',{'csrf':csrf,'id':tid,'message':'Проверим вопрос','request_token':'http-once'})
         self.assertEqual(self.db.execute('SELECT count(*) FROM outgoing_reply_queue').fetchone()[0],1)
+
+    def test_support_sees_escaped_name_without_identity_controls(self):
+        tid=self.ticket('technical')
+        with self.db:self.db.execute('UPDATE subscribers SET display_name_encrypted=?,external_id_encrypted=?',
+            (self.protector.encrypt('Анна <b>Тест</b>'),self.protector.encrypt('unique-visitor-id')))
+        csrf=self.login('support')
+        status,body=self.request('/ticket?id='+str(tid))
+        self.assertEqual(status,200)
+        self.assertIn('Анна &lt;b&gt;Тест&lt;/b&gt;',body)
+        self.assertNotIn('Показать ID',body)
+        self.assertNotIn('unique-visitor-id',body)
+        self.assertEqual(self.request('/ticket/identity',{'csrf':csrf,'id':tid})[0],403)
+        self.assertEqual(self.request('/audience')[0],403)
+        self.assertEqual(self.db.execute("SELECT count(*) FROM subscriber_access_log WHERE purpose LIKE '%:id'").fetchone()[0],0)
+
+    def test_support_cannot_reveal_id_in_another_department(self):
+        tid=self.ticket('social')
+        csrf=self.login('support')
+        self.assertEqual(self.request('/ticket/identity',{'csrf':csrf,'id':tid})[0],403)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM subscriber_access_log').fetchone()[0],0)
+
+    def test_missing_author_name_has_neutral_label(self):
+        tid=self.ticket('technical')
+        with self.db:self.db.execute('UPDATE subscribers SET display_name_encrypted=NULL')
+        self.login('support')
+        status,body=self.request('/ticket?id='+str(tid))
+        self.assertEqual(status,200);self.assertIn('Имя не указано',body)
+
+    def test_every_department_sees_name_and_cannot_reveal_id_from_ticket(self):
+        for role,department in [('advertising','advertising'),('analytics','social'),('support','technical')]:
+            tid=self.ticket(department)
+            csrf=self.login(role)
+            status,body=self.request('/ticket?id='+str(tid))
+            self.assertEqual(status,200)
+            self.assertIn('Автор: <strong>Зритель</strong>',body)
+            self.assertNotIn('Показать ID',body)
+            self.assertNotIn('ID: <strong>',body)
+            self.assertEqual(self.request('/ticket/identity',{'csrf':csrf,'id':tid})[0],403)
+            foreign=self.ticket('social' if department!='social' else 'technical')
+            self.assertEqual(self.request('/ticket?id='+str(foreign))[0],403)
+        self.assertEqual(self.db.execute("SELECT count(*) FROM subscriber_access_log WHERE purpose LIKE '%:id'").fetchone()[0],0)
+
+    def test_only_advertising_has_audience_identity_access(self):
+        self.ticket('advertising')
+        with self.db:self.db.execute("UPDATE subscribers SET status='active',external_id_encrypted=?",(self.protector.encrypt('audience-known-id'),))
+        self.login('advertising')
+        status,body=self.request('/audience')
+        self.assertEqual(status,200)
+        self.assertIn('<th>ID</th>',body)
+        self.assertIn('audience-known-id',body)
+        for role in ('analytics','observer','support'):
+            self.login(role)
+            self.assertEqual(self.request('/audience')[0],403)
