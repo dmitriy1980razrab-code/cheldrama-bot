@@ -132,7 +132,7 @@ def report_page(db,user,query):
     body+=table(['Показатель','Группа','Значение','За период / сейчас','Предыдущий период','Изменение'],rows)
     from urllib.parse import urlencode
     export={'period':period['kind'],'date':period['anchor'],'from':period['from'],'to':period['requested_to']}
-    body+=f'<p><a href="/reports.csv?{urlencode(export)}">Скачать CSV</a></p>'
+    body+=f'<p><a href="/reports.xlsx?{urlencode(export)}">Скачать Excel (.xlsx)</a> · <a href="/reports.csv?{urlencode(export)}">CSV</a></p>'
     return body,rows
 
 
@@ -174,13 +174,14 @@ def create_panel_handler(database_path,theatre_path,protector,security,*,campaig
                 cookie=SimpleCookie(self.headers.get('Cookie',''))
                 return cookie['staff_session'].value if 'staff_session' in cookie else ''
             except CookieError: return ''
-        def send(self,status,body,cookie=None,mime='text/html; charset=utf-8'):
+        def send(self,status,body,cookie=None,mime='text/html; charset=utf-8',filename=None):
             self.send_response(status)
             for key,value in [('Content-Type',mime),('Content-Length',str(len(body))),('Cache-Control','no-store'),
                 ('X-Content-Type-Options','nosniff'),('X-Frame-Options','DENY'),('Referrer-Policy','same-origin'),
                 ('Content-Security-Policy',"default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")]:
                 self.send_header(key,value)
             if cookie: self.send_header('Set-Cookie',cookie)
+            if filename: self.send_header('Content-Disposition','attachment; filename="'+filename+'"')
             self.end_headers(); self.wfile.write(body)
         def redirect(self,path,cookie=None):
             self.send_response(303); self.send_header('Location',path); self.send_header('Content-Length','0');self.send_header('Cache-Control','no-store')
@@ -224,10 +225,14 @@ def create_panel_handler(database_path,theatre_path,protector,security,*,campaig
                         WHERE t.department=? AND t.status!='closed'""",(dep or '',)).fetchone()
                     self.send(200,json.dumps({'count':count,'last':last}).encode(),mime='application/json');return
                 if path in ('/','/admin'): self.page('Панель',dashboard(db,user,csrf));return
-                if path in ('/reports','/reports.csv'):
+                if path in ('/reports','/reports.csv','/reports.xlsx'):
                     body,rows=report_page(db,user,query)
                     with db:audit(db,user['username'],'report_view' if path=='/reports' else 'report_export')
-                    if path.endswith('.csv'):
+                    if path.endswith('.xlsx'):
+                        from theatre_bot.report_excel import report_xlsx
+                        selected=report_period(query)
+                        self.send(200,report_xlsx(selected,rows),mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',filename='theatre-report-'+selected['from']+'-'+selected['to']+'.xlsx')
+                    elif path.endswith('.csv'):
                         buffer=io.StringIO();writer=csv.writer(buffer)
                         writer.writerow(['Показатель','Группа','Значение','За период / сейчас','Предыдущий период','Изменение'])
                         selected=report_period(query)

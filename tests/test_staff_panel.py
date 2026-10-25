@@ -486,3 +486,14 @@ class PanelHttpTests(StaffTests):
                 self.client.open(request,timeout=5)
             self.assertEqual(caught.exception.code,403)
         self.assertEqual(len(self.security.sessions),0)
+
+    def test_excel_export_download_has_correct_type_and_native_table(self):
+        import io,zipfile
+        self.login('observer')
+        with self.client.open(self.url+'/reports.xlsx?period=season&date=2026-10-26',timeout=5) as response:
+            self.assertEqual(response.headers.get_content_type(),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+            self.assertIn('.xlsx',response.headers.get('Content-Disposition',''))
+            with zipfile.ZipFile(io.BytesIO(response.read())) as book:
+                self.assertIn('xl/tables/table1.xml',book.namelist())
+        self.login('support')
+        self.assertEqual(self.request('/reports.xlsx')[0],403)
