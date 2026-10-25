@@ -9,6 +9,7 @@ import threading
 from theatre_bot.channels import IncomingMessage, OutgoingButton, OutgoingMessage
 from theatre_bot.dialog import Reply, answer, selected_performance_reply
 from theatre_bot.interest_survey import InterestSurvey
+from theatre_bot.feedback import FeedbackFlow
 from theatre_bot.platform_adapters import register_inbound_event
 from theatre_bot.subscribers import IdentityProtector, unsubscribe, performance_subscription
 from theatre_bot.spam_protection import check_message, normalize_message, MAX_MESSAGE_CHARS
@@ -145,6 +146,7 @@ class ChannelMessageHandler:
         survey_enabled: bool = False,
     ) -> None:
         self._survey = InterestSurvey(theatre_connection, subscriber_connection, protector) if survey_enabled else None
+        self._feedback = FeedbackFlow(subscriber_connection, protector) if survey_enabled else None
         self._theatre = theatre_connection
         self._subscribers = subscriber_connection
         self._protector = protector
@@ -216,6 +218,8 @@ class ChannelMessageHandler:
             "отписаться", "отписаться от всех", "стоп", "stop",
         }
         if opt_out:
+            if self._feedback is not None:
+                self._feedback.close(message)
             if self._survey is not None:
                 self._survey.close(message, now)
             changed = unsubscribe(
@@ -244,6 +248,8 @@ class ChannelMessageHandler:
         )
         if self._survey is not None:
             protected_action = protected_action or self._survey.valid_cancel(message, now)
+        if self._feedback is not None:
+            protected_action = protected_action or self._feedback.protected(message, now)
         if not protected_action:
             decision = check_message(
                 self._subscribers, self._protector, message.channel, message.external_user_id,
@@ -261,9 +267,19 @@ class ChannelMessageHandler:
         if not message.action and len(message.text) > MAX_MESSAGE_CHARS:
             return response(Reply("Сообщение слишком длинное. Задайте вопрос короче — до 1000 символов."))
 
+        if self._feedback is not None:
+            feedback_reply = self._feedback.try_handle(message, now)
+            if feedback_reply is not None:
+                self._flows.clear(message.channel, message.external_user_id)
+                if self._survey is not None:
+                    self._survey.close(message, now)
+                return feedback_reply
+
         if self._survey is not None:
             survey_reply = self._survey.try_handle(message, now)
             if survey_reply is not None:
+                if self._feedback is not None:
+                    self._feedback.close(message)
                 self._flows.clear(message.channel, message.external_user_id)
                 return survey_reply
 

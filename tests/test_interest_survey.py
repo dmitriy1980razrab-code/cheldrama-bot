@@ -374,7 +374,7 @@ class InterestSurveyTests(unittest.TestCase):
         for _ in range(3):
             result = self.click(self.send('Анкета интересов'), 'Пропустить')
             self.assertNotIn('месяц', result.reply.text)
-            self.assertEqual([b.label for b in result.buttons], ['Анкета интересов'])
+            self.assertEqual([b.label for b in result.buttons], ['Анкета интересов','Обратная связь'])
 
     def test_legacy_due_reminder_is_ignored(self):
         self.click(self.send('Анкета интересов'), 'Пропустить')
@@ -467,7 +467,7 @@ class InterestSurveyTests(unittest.TestCase):
 
     def test_first_message_has_only_manual_vk_keyboard(self):
         reply = self.send('Здравствуйте')
-        self.assertEqual([b.label for b in reply.buttons], ['Анкета интересов'])
+        self.assertEqual([b.label for b in reply.buttons], ['Анкета интересов','Обратная связь'])
         self.assertFalse(reply.keyboard_inline)
         self.assertNotIn('Хотите настроить интересы?', reply.reply.text)
         self.assertEqual(self.count('interest_survey_state'), 0)
@@ -544,7 +544,7 @@ class InterestSurveyTests(unittest.TestCase):
     def test_max_manual_button_has_no_invitation_or_draft(self):
         self.channel = 'max'
         reply = self.send('Здравствуйте')
-        self.assertEqual([b.label for b in reply.buttons], ['Анкета интересов'])
+        self.assertEqual([b.label for b in reply.buttons], ['Анкета интересов','Обратная связь'])
         self.assertTrue(reply.keyboard_inline)
         self.assertNotIn('Хотите настроить интересы?', reply.reply.text)
         self.assertEqual(self.count('interest_survey_state'), 0)

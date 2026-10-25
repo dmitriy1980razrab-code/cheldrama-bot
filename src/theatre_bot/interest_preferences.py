@@ -1,5 +1,6 @@
 """Explicit questionnaire preferences and atomic saving of advertising permission."""
 import json
+from theatre_bot.marketing_reports import preference_snapshot, record_preference_changes
 from theatre_bot.subscribers import _has_current_consent, _get_or_create_subscriber, _timestamp
 
 
@@ -64,6 +65,7 @@ def save_preferences(db, theatre, protector, channel, external_id, display_name,
             raise PermissionError('personal data consent required')
         subscriber_id = _get_or_create_subscriber(db, protector, channel, external_id, now, display_name)
         stamp = _timestamp(now)
+        before = preference_snapshot(db, subscriber_id)
         db.execute("UPDATE subscribers SET status='active', interested_in_premieres=?, updated_at=? WHERE id=?",
                    (int(premieres), stamp, subscriber_id))
         db.execute("DELETE FROM preferences WHERE subscriber_id=? AND source='interest_survey' AND preference_type IN ('genre','artist')", (subscriber_id,))
@@ -79,6 +81,7 @@ def save_preferences(db, theatre, protector, channel, external_id, display_name,
             (subscriber_id, consent_type, action, document_version, source, recorded_at)
             VALUES (?, 'marketing', ?, ?, 'interest_survey', ?)''',
             (subscriber_id, 'granted' if marketing else 'revoked', document_version, stamp))
+        record_preference_changes(db, subscriber_id, before, preference_snapshot(db, subscriber_id), stamp)
         if survey_actor is not None:
             db.execute("UPDATE interest_survey_state SET stage='completed', payload_encrypted=NULL, decline_count=0, next_offer_at=NULL, updated_at=? WHERE actor_hash=?", (stamp, survey_actor))
         db.commit()
@@ -102,12 +105,14 @@ def delete_preferences(db, protector, channel, external_id, document_version,
                          (channel, protector.lookup_hash(channel, external_id))).fetchone()
         stamp = _timestamp(now)
         if row:
+            before = preference_snapshot(db, row['id'])
             db.execute("DELETE FROM preferences WHERE subscriber_id=? AND source='interest_survey'", (row['id'],))
             db.execute('UPDATE subscribers SET interested_in_premieres=0, updated_at=? WHERE id=?', (stamp, row['id']))
             db.execute("""INSERT INTO consent_events
                 (subscriber_id, consent_type, action, document_version, source, recorded_at)
                 VALUES (?, 'marketing', 'revoked', ?, 'interest_survey', ?)""",
                 (row['id'], document_version, stamp))
+            record_preference_changes(db, row['id'], before, set(), stamp)
         db.execute("""UPDATE interest_survey_state SET stage='closed', payload_encrypted=NULL,
             next_offer_at=NULL, decline_count=0, updated_at=? WHERE actor_hash=?""", (stamp, survey_actor))
         db.commit()

@@ -72,11 +72,13 @@ class PersistentDeliveryWorker:
         batch_limit: int = 100,
         auto_start: bool = True,
         theatre_database_path: Path | None = None,
+        campaigns_enabled: bool = False,
     ) -> None:
         if poll_interval < 0.05 or poll_interval > 3600:
             raise ValueError("poll interval must be between 0.05 and 3600 seconds")
         if batch_limit < 1 or batch_limit > 1000:
             raise ValueError("batch limit must be between 1 and 1000")
+        self._campaigns_enabled = campaigns_enabled
         self._database_path = database_path
         self._theatre_database_path = theatre_database_path
         self._protector = protector
@@ -122,6 +124,12 @@ class PersistentDeliveryWorker:
                     theatre = sqlite3.connect(self._theatre_database_path.resolve().as_uri() + "?mode=ro", uri=True)
                     theatre.row_factory = sqlite3.Row
                 initialize_subscribers(connection)
+                from theatre_bot.feedback import queue_staff_alerts, purge_feedback_history
+                purge_feedback_history(connection, now=now)
+                queue_staff_alerts(connection, self._protector, now=now)
+                if self._campaigns_enabled:
+                    from theatre_bot.campaign_delivery import queue_due_campaigns
+                    queue_due_campaigns(connection, self._protector, now=now)
                 report = deliver_persistent_replies(
                     connection,
                     self._protector,

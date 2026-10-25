@@ -1,0 +1,378 @@
+from pathlib import Path
+import sys
+sys.path.insert(0,str(Path(__file__).parents[1]/'src'))
+import tempfile
+import threading
+import unittest
+import sqlite3
+from datetime import datetime,timedelta,timezone
+from http.server import ThreadingHTTPServer
+from urllib.request import build_opener,HTTPCookieProcessor,Request
+from urllib.error import HTTPError
+from urllib.parse import urlencode
+from http.cookiejar import CookieJar
+from cryptography.fernet import Fernet
+from theatre_bot.subscribers import connect_subscribers,initialize_subscribers,IdentityProtector,record_consent
+from theatre_bot.database import connect,initialize
+from theatre_bot.admin_access import create_staff,require,password_matches,set_staff_active
+from theatre_bot.admin_panel import PanelSecurity,create_panel_handler,cancel_campaign
+from theatre_bot.feedback import FeedbackFlow,staff_reply,authorized_ticket,change_ticket,queue_staff_alerts
+from theatre_bot.channels import IncomingMessage
+from theatre_bot.marketing_reports import report_rows
+from theatre_bot.interest_preferences import save_preferences
+from theatre_bot.persistent_replies import claim_replies
+from theatre_bot.campaigns import create_campaign,approve_campaign,schedule_campaign
+from theatre_bot.campaign_delivery import queue_due_campaigns
+
+class StaffTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
+        self.root=Path(self.tmp.name)
+        self.db=connect_subscribers(self.root/'subscribers.sqlite3');initialize_subscribers(self.db);self.addCleanup(self.db.close)
+        self.theatre=connect(self.root/'theatre.sqlite3');initialize(self.theatre);self.addCleanup(self.theatre.close)
+        self.protector=IdentityProtector(Fernet.generate_key(),b'x'*32)
+        self.now=datetime(2026,10,26,8,tzinfo=timezone.utc)
+        self.ids={}
+        for role in ('advertising','analytics','observer','support'):
+            self.ids[role]=create_staff(self.db,role,'strong-password-123',role,now=self.now)
+        self.flow=FeedbackFlow(self.db,self.protector);self.counter=0
+        record_consent(self.db,self.protector,'vk','123','personal_data','draft-v1',True,'test',at=self.now)
+
+    def user(self,role):return self.db.execute('SELECT * FROM admin_users WHERE id=?',(self.ids[role],)).fetchone()
+    def msg(self,text='',action=None,user='123',channel='vk'):
+        self.counter+=1
+        return IncomingMessage(channel,user,str(self.counter),text,'Зритель',action)
+    def send(self,text='',action=None,**kw):return self.flow.try_handle(self.msg(text,action,**kw),self.now)
+    def click(self,r,label,**kw):return self.send(action=next(b.action for b in r.buttons if b.label==label),**kw)
+    def ticket(self,department='advertising',channel='vk'):
+        self.click(self.send(action='feedback:open',channel=channel),{'advertising':'Реклама, акции','social':'Соц.сети','technical':'Техподдержка'}[department],channel=channel)
+        self.send('Вопрос зрителя',channel=channel)
+        return self.db.execute('SELECT max(id) FROM feedback_tickets').fetchone()[0]
+
+    def test_role_permissions(self):
+        for role in ('analytics','observer','support'):
+            with self.assertRaises(PermissionError):require(self.user(role),'campaigns')
+            with self.assertRaises(PermissionError):require(self.user(role),'accounts')
+        for role in ('advertising','analytics','observer'):require(self.user(role),'reports')
+        with self.assertRaises(PermissionError):require(self.user('support'),'reports')
+
+    def test_password_is_hashed_and_login_invalidated_on_disable(self):
+        security=PanelSecurity();u=self.user('analytics')
+        self.assertNotIn('strong-password',u['password_hash'])
+        self.assertTrue(password_matches('strong-password-123',u['password_hash']))
+        self.assertIsNone(security.login(self.db,'analytics','wrong'))
+        token=security.login(self.db,'analytics','strong-password-123')
+        self.assertIsNotNone(security.session(self.db,token))
+        set_staff_active(self.db,self.user('advertising'),u['id'],False)
+        self.assertIsNone(security.session(self.db,token))
+
+    def test_session_expiry_login_throttling(self):
+        security=PanelSecurity();token=security.login(self.db,'observer','strong-password-123',now=0)
+        self.assertIsNone(security.session(self.db,token,now=1801))
+        for _ in range(10):security.login(self.db,'none','wrong',now=2000)
+        self.assertIsNone(security.login(self.db,'observer','strong-password-123',now=2001))
+        self.assertIsNotNone(security.login(self.db,'observer','strong-password-123',now=2301))
+
+    def test_cannot_disable_self(self):
+        u=self.user('advertising')
+        with self.assertRaises(ValueError):set_staff_active(self.db,u,u['id'],False)
+
+    def test_department_routes_and_encrypts_text(self):
+        tid=self.ticket('social')
+        row=self.db.execute('SELECT * FROM feedback_tickets WHERE id=?',(tid,)).fetchone()
+        self.assertEqual(row['department'],'social')
+        raw=self.db.execute('SELECT body_encrypted FROM feedback_messages').fetchone()[0]
+        self.assertNotIn('Вопрос'.encode(),raw)
+        self.assertEqual(self.protector.decrypt(raw),'Вопрос зрителя')
+        self.assertIsNotNone(authorized_ticket(self.db,self.user('analytics'),tid))
+        for role in ('advertising','observer','support'):
+            with self.assertRaises(PermissionError):authorized_ticket(self.db,self.user(role),tid)
+
+    def test_no_consent_no_ticket(self):
+        menu=self.send(action='feedback:open',user='other')
+        reply=self.click(menu,'Техподдержка',user='other')
+        self.assertIn('Согласен',[b.label for b in reply.buttons])
+        self.send('Вопрос',user='other')
+        self.assertEqual(self.db.execute('SELECT count(*) FROM feedback_tickets').fetchone()[0],0)
+        self.click(reply,'Согласен',user='other')
+        self.send('Вопрос',user='other')
+        self.assertEqual(self.db.execute('SELECT count(*) FROM feedback_tickets').fetchone()[0],1)
+
+    def test_foreign_and_stale_callbacks_do_not_create_ticket(self):
+        menu=self.send(action='feedback:open')
+        self.click(menu,'Техподдержка',user='other')
+        self.now+=timedelta(minutes=31)
+        self.click(menu,'Техподдержка')
+        self.assertEqual(self.db.execute('SELECT count(*) FROM feedback_tickets').fetchone()[0],0)
+
+    def test_multiple_messages_same_ticket_and_return_to_bot(self):
+        tid=self.ticket()
+        reply=self.send('Ещё вопрос')
+        self.assertEqual(self.db.execute('SELECT count(*) FROM feedback_tickets').fetchone()[0],1)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM feedback_messages').fetchone()[0],2)
+        self.click(reply,'Вернуться к боту')
+        self.assertIsNone(self.send('Гамлет'))
+
+    def test_survey_button_leaves_feedback(self):
+        self.ticket()
+        self.assertIsNone(self.send(action='survey:open'))
+        self.assertIsNone(self.send('Драма'))
+        self.assertEqual(self.db.execute('SELECT count(*) FROM feedback_messages').fetchone()[0],1)
+
+    def test_reply_is_atomic_deduplicated_and_in_original_channel(self):
+        tid=self.ticket('technical')
+        user=self.user('support')
+        self.assertTrue(staff_reply(self.db,self.protector,user,tid,'Ответ','nonce',self.now))
+        self.assertFalse(staff_reply(self.db,self.protector,user,tid,'Ответ','nonce',self.now))
+        self.assertEqual(self.db.execute('SELECT count(*) FROM outgoing_reply_queue').fetchone()[0],1)
+        queued=claim_replies(self.db,self.protector,now=self.now)
+        self.assertEqual(queued[0].message.channel,'vk')
+        self.assertEqual(queued[0].message.external_user_id,'123')
+        self.assertIn('Ответ сотрудника',queued[0].message.reply.text)
+        self.assertIsNotNone(self.send(action=f'feedback:resume:{tid}'))
+        self.assertIn('недоступно',self.send(action=f'feedback:resume:{tid}',user='other').reply.text)
+
+    def test_reply_rollback_on_queue_failure(self):
+        tid=self.ticket('social')
+        with self.db:self.db.execute("CREATE TRIGGER queue_fail BEFORE INSERT ON outgoing_reply_queue BEGIN SELECT RAISE(ABORT,'test'); END")
+        with self.assertRaises(sqlite3.IntegrityError):staff_reply(self.db,self.protector,self.user('analytics'),tid,'Ответ','a',self.now)
+        self.assertEqual(self.db.execute("SELECT count(*) FROM feedback_messages WHERE direction='outgoing'").fetchone()[0],0)
+
+    def test_transfer_preserves_history_and_changes_permissions(self):
+        tid=self.ticket('advertising')
+        change_ticket(self.db,self.user('advertising'),tid,'transfer','social',self.now)
+        with self.assertRaises(PermissionError):authorized_ticket(self.db,self.user('advertising'),tid)
+        self.assertIsNotNone(authorized_ticket(self.db,self.user('analytics'),tid))
+        self.assertEqual(self.db.execute('SELECT count(*) FROM feedback_messages').fetchone()[0],1)
+        change_ticket(self.db,self.user('analytics'),tid,'close',now=self.now)
+        with self.assertRaises(ValueError):staff_reply(self.db,self.protector,self.user('analytics'),tid,'Ответ','a',self.now)
+
+    def test_offline_alert_has_no_viewer_identity_or_text_and_does_not_repeat(self):
+        self.ticket('social')
+        with self.db:
+            self.db.execute("UPDATE admin_users SET notify_channel='vk',notify_id_encrypted=? WHERE id=?",(self.protector.encrypt('staff'),self.ids['analytics']))
+        self.assertEqual(queue_staff_alerts(self.db,self.protector,self.now),1)
+        self.assertEqual(queue_staff_alerts(self.db,self.protector,self.now),0)
+        payload=self.protector.decrypt(self.db.execute('SELECT payload_encrypted FROM outgoing_reply_queue').fetchone()[0])
+        self.assertNotIn('Вопрос зрителя',payload)
+        self.assertNotIn('Зритель',payload)
+        self.assertIn('Соц.сети',payload)
+
+    def test_online_and_disabled_staff_do_not_receive_alerts(self):
+        self.ticket('social')
+        with self.db:self.db.execute("UPDATE admin_users SET notify_channel='vk',notify_id_encrypted=?,last_seen_at=? WHERE id=?",(self.protector.encrypt('staff'),self.now.isoformat(),self.ids['analytics']))
+        self.assertEqual(queue_staff_alerts(self.db,self.protector,self.now),0)
+        set_staff_active(self.db,self.user('advertising'),self.ids['analytics'],False)
+        self.assertEqual(queue_staff_alerts(self.db,self.protector,self.now+timedelta(minutes=10)),0)
+
+    def test_preference_changes_and_observer_aggregate_report(self):
+        save_preferences(self.db,self.theatre,self.protector,'vk','123','Зритель',['драма'],[],True,True,'draft-v1',now=self.now)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM preference_changes').fetchone()[0],2)
+        save_preferences(self.db,self.theatre,self.protector,'vk','123','Зритель',[],[],False,True,'draft-v1',now=self.now)
+        self.assertEqual(self.db.execute("SELECT count(*) FROM preference_changes WHERE action='removed'").fetchone()[0],2)
+        rows=report_rows(self.db,self.user('observer'),'2026-10-01','2026-10-31')
+        self.assertTrue(any('Изменения' in r[0] for r in rows))
+        self.assertNotIn('Зритель',str(rows))
+        with self.assertRaises(ValueError):report_rows(self.db,self.user('observer'),'2026-10-31','2026-10-01')
+
+    def test_campaign_cancel_cancels_queue_and_keeps_audit(self):
+        save_preferences(self.db,self.theatre,self.protector,'vk','123',None,[],[],False,True,'draft-v1',now=self.now)
+        cid=create_campaign(self.db,'Название','Текст','advertising',at=self.now)
+        approve_campaign(self.db,cid,'advertising',at=self.now)
+        schedule_campaign(self.db,cid,self.now+timedelta(minutes=1),'advertising',at=self.now)
+        queue_due_campaigns(self.db,self.protector,now=self.now+timedelta(minutes=2))
+        cancel_campaign(self.db,self.user('advertising'),cid)
+        self.assertEqual(self.db.execute('SELECT status FROM outgoing_reply_queue').fetchone()[0],'cancelled')
+        self.assertEqual(self.db.execute('SELECT status FROM campaign_recipients').fetchone()[0],'skipped')
+
+    def test_role_change_revokes_old_session(self):
+        from theatre_bot.admin_access import set_staff_role
+        security=PanelSecurity();token=security.login(self.db,'analytics','strong-password-123')
+        set_staff_role(self.db,self.user('advertising'),self.ids['analytics'],'support')
+        self.assertIsNone(security.session(self.db,token))
+        self.assertEqual(self.user('analytics')['role'],'support')
+
+    def test_disabled_staff_alert_is_cancelled_before_delivery(self):
+        from theatre_bot.persistent_replies import deliver_persistent_replies
+        class Sender:
+            def __init__(self):self.messages=[]
+            def send(self,message):self.messages.append(message)
+        self.ticket('social')
+        with self.db:self.db.execute("UPDATE admin_users SET notify_channel='vk',notify_id_encrypted=? WHERE id=?",(self.protector.encrypt('staff'),self.ids['analytics']))
+        queue_staff_alerts(self.db,self.protector,self.now)
+        set_staff_active(self.db,self.user('advertising'),self.ids['analytics'],False)
+        sender=Sender();report=deliver_persistent_replies(self.db,self.protector,sender,now=self.now)
+        self.assertEqual(report.cancelled,1)
+        self.assertEqual(sender.messages,[])
+
+    def test_transfer_generates_alert_for_new_department(self):
+        tid=self.ticket('advertising')
+        with self.db:
+            self.db.execute("UPDATE admin_users SET notify_channel='vk',notify_id_encrypted=?,alert_cursor=100 WHERE id=?",(self.protector.encrypt('staff'),self.ids['analytics']))
+            # Cursor can be newer than all messages in the transferred ticket.
+            self.db.execute("INSERT INTO feedback_alert_events(id,ticket_id,created_at) VALUES(101,?,?)",(tid,self.now.isoformat()))
+        change_ticket(self.db,self.user('advertising'),tid,'transfer','social',self.now)
+        self.assertEqual(queue_staff_alerts(self.db,self.protector,self.now),1)
+
+    def test_closed_history_retention_preserves_open_tickets(self):
+        from theatre_bot.feedback import purge_feedback_history
+        closed=self.ticket('advertising')
+        change_ticket(self.db,self.user('advertising'),closed,'close',now=self.now)
+        self.send(action='feedback:open')
+        opened=self.ticket('technical')
+        self.assertEqual(purge_feedback_history(self.db,self.now+timedelta(days=31)),1)
+        self.assertEqual(self.db.execute('SELECT body_encrypted FROM feedback_messages WHERE ticket_id=?',(closed,)).fetchone()[0],b'')
+        self.assertTrue(self.db.execute('SELECT body_encrypted FROM feedback_messages WHERE ticket_id=?',(opened,)).fetchone()[0])
+
+    def test_expired_pairing_code_and_disabled_account_cannot_be_linked(self):
+        import hashlib
+        from theatre_bot.feedback import claim_staff_notifications
+        with self.db:
+            self.db.execute('INSERT INTO staff_notify_challenges(staff_id,code_hash,created_at,expires_at) VALUES(?,?,?,?)',
+                (self.ids['analytics'],hashlib.sha256(b'code').hexdigest(),self.now.isoformat(),(self.now+timedelta(minutes=1)).isoformat()))
+        self.assertIn('недействителен',claim_staff_notifications(self.db,self.protector,'vk','staff','code',self.now+timedelta(minutes=2)))
+        set_staff_active(self.db,self.user('advertising'),self.ids['analytics'],False)
+        self.assertIn('недействителен',claim_staff_notifications(self.db,self.protector,'vk','staff','code',self.now))
+
+    def test_handler_feedback_and_stop_do_not_change_survey_or_subscription_consents(self):
+        from theatre_bot.channel_handler import ChannelMessageHandler
+        handler=ChannelMessageHandler(self.theatre,self.db,self.protector,survey_enabled=True)
+        menu=handler.process(self.msg(action='feedback:open'),now=self.now)
+        action=next(b.action for b in menu.buttons if b.label=='Соц.сети')
+        handler.process(self.msg(action=action),now=self.now)
+        reply=handler.process(self.msg('Вопрос о публикации'),now=self.now)
+        self.assertIn('Обращение №',reply.reply.text)
+        self.assertEqual(self.db.execute("SELECT count(*) FROM preferences").fetchone()[0],0)
+        self.assertEqual(self.db.execute("SELECT count(*) FROM consent_events WHERE consent_type='marketing'").fetchone()[0],0)
+        handler.process(self.msg('Стоп'),now=self.now)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM feedback_sessions').fetchone()[0],0)
+
+    def test_worker_sends_alert_without_running_campaigns_by_default(self):
+        from theatre_bot.persistent_delivery_worker import PersistentDeliveryWorker
+        class Sender:
+            def __init__(self):self.messages=[]
+            def send(self,message):self.messages.append(message)
+        self.ticket('social')
+        with self.db:self.db.execute("UPDATE admin_users SET notify_channel='vk',notify_id_encrypted=? WHERE id=?",(self.protector.encrypt('staff'),self.ids['analytics']))
+        sender=Sender();worker=PersistentDeliveryWorker(self.root/'subscribers.sqlite3',self.protector,sender,auto_start=False)
+        worker.run_once(self.now)
+        self.assertEqual(len(sender.messages),1)
+        self.assertEqual(sender.messages[0].external_user_id,'staff')
+        worker.close()
+
+    def test_two_due_campaigns_cannot_bypass_delivery_interval(self):
+        from theatre_bot.persistent_replies import deliver_persistent_replies
+        class Sender:
+            def __init__(self):self.messages=[]
+            def send(self,message):self.messages.append(message)
+        save_preferences(self.db,self.theatre,self.protector,'vk','123',None,[],[],False,True,'draft-v1',now=self.now)
+        for name in ('Первая','Вторая'):
+            cid=create_campaign(self.db,name,'Текст','advertising',at=self.now)
+            approve_campaign(self.db,cid,'advertising',at=self.now)
+            schedule_campaign(self.db,cid,self.now+timedelta(minutes=1),'advertising',at=self.now)
+        due=self.now+timedelta(minutes=2)
+        queue_due_campaigns(self.db,self.protector,now=due)
+        sender=Sender();report=deliver_persistent_replies(self.db,self.protector,sender,now=due)
+        self.assertEqual(report.sent,1)
+        self.assertEqual(report.cancelled,1)
+        self.assertEqual(len(sender.messages),1)
+
+    def test_max_feedback_response_preserves_channel(self):
+        menu=self.send(action='feedback:open',channel='max')
+        consent=self.click(menu,'Техподдержка',channel='max')
+        self.click(consent,'Согласен',channel='max')
+        self.send('Ошибка',channel='max')
+        tid=self.db.execute('SELECT max(id) FROM feedback_tickets').fetchone()[0]
+        staff_reply(self.db,self.protector,self.user('support'),tid,'Проверим','nonce',self.now)
+        queued=claim_replies(self.db,self.protector,now=self.now)
+        self.assertEqual(queued[0].message.channel,'max')
+        self.assertEqual(queued[0].message.external_user_id,'123')
+
+    def test_enabled_worker_queues_and_sends_due_campaign(self):
+        from theatre_bot.persistent_delivery_worker import PersistentDeliveryWorker
+        class Sender:
+            def __init__(self):self.messages=[]
+            def send(self,message):self.messages.append(message)
+        save_preferences(self.db,self.theatre,self.protector,'vk','123',None,[],[],False,True,'draft-v1',now=self.now)
+        cid=create_campaign(self.db,'Тест','Текст','advertising',at=self.now)
+        approve_campaign(self.db,cid,'advertising',at=self.now)
+        schedule_campaign(self.db,cid,self.now+timedelta(minutes=1),'advertising',at=self.now)
+        sender=Sender();worker=PersistentDeliveryWorker(self.root/'subscribers.sqlite3',self.protector,sender,auto_start=False,campaigns_enabled=True)
+        report=worker.run_once(self.now+timedelta(minutes=2))
+        self.assertEqual(report.sent,1);self.assertEqual(len(sender.messages),1)
+        worker.run_once(self.now+timedelta(minutes=3))
+        self.assertEqual(len(sender.messages),1)
+        worker.close()
+
+class PanelHttpTests(StaffTests):
+    # HTTP requests use separate connections, as in the actual loopback server.
+    def setUp(self):
+        super().setUp()
+        self.security=PanelSecurity()
+        self.server=ThreadingHTTPServer(('127.0.0.1',0),create_panel_handler(self.root/'subscribers.sqlite3',self.root/'theatre.sqlite3',self.protector,self.security))
+        self.thread=threading.Thread(target=self.server.serve_forever,daemon=True);self.thread.start()
+        self.addCleanup(self.stop_server)
+        self.url=f'http://127.0.0.1:{self.server.server_port}'
+        self.cookies=CookieJar();self.client=build_opener(HTTPCookieProcessor(self.cookies))
+    def stop_server(self):self.server.shutdown();self.server.server_close();self.thread.join()
+    def request(self,path,data=None):
+        req=Request(self.url+path,data=urlencode(data).encode() if data is not None else None)
+        try:
+            with self.client.open(req,timeout=5) as response:return response.status,response.read().decode('utf-8-sig')
+        except HTTPError as error:return error.code,error.read().decode()
+    def login(self,role):
+        status,_=self.request('/login',{'username':role,'password':'strong-password-123'})
+        self.assertEqual(status,200)
+        token=next(c.value for c in self.cookies if c.name=='staff_session')
+        return self.security.sessions[token]['csrf']
+    def test_observer_cannot_access_audience_tickets_campaigns_or_post(self):
+        csrf=self.login('observer')
+        self.assertEqual(self.request('/reports')[0],200)
+        for path in ('/audience','/tickets','/campaigns','/accounts','/audit'):
+            self.assertEqual(self.request(path)[0],403)
+        self.assertEqual(self.request('/campaign/create',{'csrf':csrf,'name':'n','message':'t','target':'all|'})[0],403)
+    def test_missing_csrf_cannot_create_account(self):
+        self.login('advertising')
+        status,_=self.request('/account/create',{'username':'new','password':'strong-password-123','role':'observer'})
+        self.assertEqual(status,403)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM admin_users').fetchone()[0],4)
+    def test_ticket_html_escaped_and_role_scoped(self):
+        tid=self.ticket('social')
+        with self.db:self.db.execute('UPDATE feedback_messages SET body_encrypted=?',(self.protector.encrypt('<script>alert(1)</script>'),))
+        self.login('analytics')
+        status,body=self.request('/ticket?id='+str(tid))
+        self.assertEqual(status,200);self.assertIn('&lt;script&gt;',body);self.assertNotIn('<script>alert(1)</script>',body)
+        self.assertEqual(self.request('/accounts')[0],403)
+        self.login('support');self.assertEqual(self.request('/ticket?id='+str(tid))[0],403)
+    def test_notification_pairing_requires_private_code_and_actual_chat(self):
+        self.now=datetime.now(timezone.utc)
+        csrf=self.login('analytics')
+        status,body=self.request('/profile/notify',{'csrf':csrf})
+        self.assertEqual(status,200)
+        self.assertIsNone(self.user('analytics')['notify_id_encrypted'])
+        import re
+        command=re.search(r'<pre>(Подключить уведомления [^<]+)</pre>',body).group(1)
+        self.assertIn('недействителен',self.send('Подключить уведомления wrong',user='employee').reply.text)
+        self.assertIn('подключены',self.send(command,user='employee').reply.text)
+        self.assertEqual(self.protector.decrypt(self.user('analytics')['notify_id_encrypted']),'employee')
+        self.assertIn('недействителен',self.send(command,user='other').reply.text)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM outgoing_reply_queue').fetchone()[0],0)
+    def test_campaign_preview_does_not_send_and_schedule_disabled(self):
+        csrf=self.login('advertising')
+        status,body=self.request('/campaign/create',{'csrf':csrf,'name':'Проба','message':'Текст','channel':'vk','target':'all|'})
+        self.assertEqual(status,200);self.assertIn('Получателей сейчас',body)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM outgoing_reply_queue').fetchone()[0],0)
+        cid=self.db.execute('SELECT id FROM campaigns').fetchone()[0]
+        self.assertEqual(self.request('/campaign/approve',{'csrf':csrf,'id':cid,'confirm':'yes'})[0],200)
+        self.assertEqual(self.request('/campaign/schedule',{'csrf':csrf,'id':cid,'confirm':'yes','scheduled_at':'2030-01-01T18:00'})[0],400)
+
+    def test_http_staff_reply_shows_delivery_state(self):
+        tid=self.ticket('social')
+        csrf=self.login('analytics')
+        status,body=self.request('/ticket/reply',{'csrf':csrf,'id':tid,'message':'Проверим вопрос','request_token':'http-once'})
+        self.assertEqual(status,200)
+        self.assertIn('Проверим вопрос',body)
+        self.assertIn('Ожидает отправки',body)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM outgoing_reply_queue').fetchone()[0],1)
+        self.request('/ticket/reply',{'csrf':csrf,'id':tid,'message':'Проверим вопрос','request_token':'http-once'})
+        self.assertEqual(self.db.execute('SELECT count(*) FROM outgoing_reply_queue').fetchone()[0],1)

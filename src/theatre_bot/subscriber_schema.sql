@@ -220,3 +220,58 @@ CREATE TABLE IF NOT EXISTS channel_menu_hints (
     actor_hash TEXT PRIMARY KEY,
     shown_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS admin_users (
+    id INTEGER PRIMARY KEY,
+    username TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    role TEXT NOT NULL CHECK(role IN ('advertising','analytics','observer','support')),
+    active INTEGER NOT NULL DEFAULT 1,
+    last_seen_at TEXT,
+    notify_channel TEXT CHECK(notify_channel IN ('vk','max')),
+    notify_id_encrypted BLOB,
+    alert_cursor INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS admin_audit (
+    id INTEGER PRIMARY KEY, actor TEXT NOT NULL, action TEXT NOT NULL,
+    object_key TEXT, recorded_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS feedback_tickets (
+    id INTEGER PRIMARY KEY,
+    subscriber_id INTEGER NOT NULL REFERENCES subscribers(id),
+    department TEXT NOT NULL CHECK(department IN ('advertising','social','technical')),
+    status TEXT NOT NULL DEFAULT 'new' CHECK(status IN ('new','working','closed')),
+    assigned_to INTEGER REFERENCES admin_users(id),
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_feedback_tickets_queue ON feedback_tickets(department,status,updated_at);
+CREATE TABLE IF NOT EXISTS feedback_messages (
+    id INTEGER PRIMARY KEY,
+    ticket_id INTEGER NOT NULL REFERENCES feedback_tickets(id),
+    direction TEXT NOT NULL CHECK(direction IN ('incoming','outgoing')),
+    body_encrypted BLOB NOT NULL,
+    staff_id INTEGER REFERENCES admin_users(id),
+    outgoing_queue_id INTEGER REFERENCES outgoing_reply_queue(id),
+    dedupe_key TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_feedback_messages_ticket ON feedback_messages(ticket_id,id);
+CREATE TABLE IF NOT EXISTS feedback_sessions (
+    actor_hash TEXT PRIMARY KEY, stage TEXT NOT NULL,
+    token TEXT NOT NULL, department TEXT,
+    ticket_id INTEGER REFERENCES feedback_tickets(id), expires_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS preference_changes (
+    id INTEGER PRIMARY KEY,
+    preference_type TEXT NOT NULL, preference_label TEXT NOT NULL,
+    action TEXT NOT NULL CHECK(action IN ('added','removed')), recorded_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS staff_notify_challenges (
+    staff_id INTEGER PRIMARY KEY REFERENCES admin_users(id), channel TEXT,
+    id_encrypted BLOB, code_hash TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS feedback_alert_events (
+    id INTEGER PRIMARY KEY, ticket_id INTEGER NOT NULL REFERENCES feedback_tickets(id), created_at TEXT NOT NULL
+);

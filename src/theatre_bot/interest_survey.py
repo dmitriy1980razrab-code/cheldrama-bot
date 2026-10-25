@@ -74,7 +74,7 @@ class InterestSurvey:
 
     def _menu_reply(self, message, text):
         return OutgoingMessage(message.channel, message.external_user_id, Reply(text),
-            (OutgoingButton('survey:open', 'Анкета интересов'),), keyboard_inline=message.channel!='vk')
+            (OutgoingButton('survey:open', 'Анкета интересов'), OutgoingButton('feedback:open', 'Обратная связь')), keyboard_inline=message.channel!='vk')
 
     def decline(self, message, now=None):
         self.close(message, now)
@@ -103,7 +103,7 @@ class InterestSurvey:
                             'Также можно написать «Мои интересы».')
                     outgoing = replace(outgoing, reply=replace(outgoing.reply,
                         text=outgoing.reply.text+'\n\n'+hint))
-            return replace(outgoing, buttons=(OutgoingButton('survey:open', 'Анкета интересов'),), keyboard_inline=message.channel!='vk')
+            return replace(outgoing, buttons=(OutgoingButton('survey:open', 'Анкета интересов'), OutgoingButton('feedback:open', 'Обратная связь')), keyboard_inline=message.channel!='vk')
         return outgoing
 
     def start(self, message, now=None):

@@ -160,6 +160,7 @@ def build_webhook_services_from_environment(
         protector,
         sender,
         theatre_database_path=theatre_database_path,
+        campaigns_enabled=_value("THEATRE_CAMPAIGNS_ENABLED") == "1",
     )
     runtime = WebhookRuntime(
         vk_adapter,

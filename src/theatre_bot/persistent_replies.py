@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 import json
+import hashlib
 import secrets
 from pathlib import Path
 import sqlite3
@@ -345,6 +346,15 @@ def _source_allows_delivery(
     *, theatre_connection: sqlite3.Connection | None = None,
     now: datetime | None = None,
 ) -> bool:
+    if stored.source_type == "webhook" and stored.source_key and stored.source_key.startswith("staff-alert:"):
+        parts = stored.source_key.split(":")
+        if len(parts) != 4 or not parts[1].isdigit():
+            return False
+        account = connection.execute(
+            "SELECT notify_id_encrypted FROM admin_users WHERE id=? AND active=1 AND role=? AND notify_channel=? AND notify_id_encrypted IS NOT NULL",
+            (int(parts[1]), parts[2], stored.message.channel),
+        ).fetchone()
+        return bool(account and hashlib.sha256(account["notify_id_encrypted"]).hexdigest() == parts[3])
     if stored.source_type == "campaign":
         if not stored.source_key or not stored.source_key.isdigit():
             return False
@@ -357,6 +367,16 @@ def _source_allows_delivery(
             WHERE cr.id = ? AND cr.status = 'planned'
               AND c.status = 'scheduled'
               AND s.status = 'active' AND s.external_id_encrypted IS NOT NULL
+              AND (c.premieres_only=0 OR s.interested_in_premieres=1)
+              AND (c.target_type='all' OR EXISTS (
+                  SELECT 1 FROM preferences p WHERE p.subscriber_id=s.id
+                    AND p.preference_type=c.target_type AND p.preference_key=c.target_key
+              ))
+              AND NOT EXISTS (
+                  SELECT 1 FROM campaign_recipients recent WHERE recent.subscriber_id=s.id
+                    AND recent.status='sent' AND recent.id!=cr.id
+                    AND julianday(recent.sent_at)>=julianday(?)-7
+              )
               AND (
                   SELECT action FROM consent_events ce
                   WHERE ce.subscriber_id = s.id
@@ -364,7 +384,7 @@ def _source_allows_delivery(
                   ORDER BY ce.id DESC LIMIT 1
               ) = 'granted'
             """,
-            (int(stored.source_key),),
+            (int(stored.source_key), _timestamp(now)),
         ).fetchone()
         return row is not None
     if stored.source_type != "service_notification":
