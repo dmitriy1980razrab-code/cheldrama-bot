@@ -23,7 +23,7 @@ def build_sheet(period,rows,title,note,table_id):
     node=make_node()
     sheet=node('worksheet')
     views=ET.SubElement(sheet,'{'+NS+'}sheetViews')
-    view=ET.SubElement(views,'{'+NS+'}sheetView',workbookViewId='0',showGridLines='0')
+    view=ET.SubElement(views,'{'+NS+'}sheetView',workbookViewId='0',showGridLines='1')
     ET.SubElement(view,'{'+NS+'}pane',ySplit='6',topLeftCell='A7',activePane='bottomLeft',state='frozen')
     columns=ET.SubElement(sheet,'{'+NS+'}cols')
     for i,width in enumerate((55,27,42,24,24,20),1):
@@ -54,22 +54,15 @@ def build_sheet(period,rows,title,note,table_id):
         add(index,row,3,max(32,min(90,16*(1+max(len(clean(v))//w for v,w in zip(row,(52,25,40,22,22,18)))))))
     merges=ET.SubElement(sheet,'{'+NS+'}mergeCells',count='4')
     for row in range(1,5):ET.SubElement(merges,'{'+NS+'}mergeCell',ref=f'A{row}:F{row}')
-    parts=ET.SubElement(sheet,'{'+NS+'}tableParts',count='1')
-    ET.SubElement(parts,'{'+NS+'}tablePart',{'{'+REL+'}id':'rId1'})
-    end=6+len(values)
-    table=node('table',id=str(table_id),name=f'TheatreReport{table_id}',displayName=f'TheatreReport{table_id}',ref=f'A6:F{end}',totalsRowShown='0')
-    ET.SubElement(table,'{'+NS+'}autoFilter',ref=f'A6:F{end}')
-    cols=ET.SubElement(table,'{'+NS+'}tableColumns',count='6')
-    for i,name in enumerate(headers,1):ET.SubElement(cols,'{'+NS+'}tableColumn',id=str(i),name=name)
-    ET.SubElement(table,'{'+NS+'}tableStyleInfo',name='TableStyleMedium2',showFirstColumn='0',showLastColumn='0',showRowStripes='1',showColumnStripes='0')
-    return sheet,table
+    return sheet
+
 
 
 def report_xlsx(period,rows):
     from theatre_bot.report_sections import grouped_reports
     sections=grouped_reports(rows)
     styles=f'''<styleSheet xmlns="{NS}"><numFmts count="1"><numFmt numFmtId="164" formatCode="0.##"/></numFmts>
-    <fonts count="3"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="18"/><color rgb="FF1769AA"/><name val="Calibri"/></font><font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font></fonts>
+    <fonts count="3"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="18"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts>
     <fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF1769AA"/><bgColor indexed="64"/></patternFill></fill></fills>
     <borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
     <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
@@ -77,10 +70,10 @@ def report_xlsx(period,rows):
     <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf>
     <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
     <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyAlignment="1"><alignment horizontal="right" vertical="top" wrapText="1"/></xf>
-    <xf numFmtId="0" fontId="2" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf></cellXfs>
+    <xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf></cellXfs>
     <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>'''
     content_types='''<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>'''
-    for part,kind in [('workbook','sheet.main'),('styles','styles')]+[(f'worksheets/sheet{i}','worksheet') for i in range(1,len(sections)+1)]+[(f'tables/table{i}','table') for i in range(1,len(sections)+1)]:
+    for part,kind in [('workbook','sheet.main'),('styles','styles')]+[(f'worksheets/sheet{i}','worksheet') for i in range(1,len(sections)+1)]:
         content_types+=f'<Override PartName="/xl/{part}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.{kind}+xml"/>'
     content_types+='</Types>'
     def rels(items):return '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'+''.join(f'<Relationship Id="{key}" Type="{REL}/{kind}" Target="{target}"/>' for key,kind,target in items)+'</Relationships>'
@@ -92,10 +85,8 @@ def report_xlsx(period,rows):
         sheets=ET.SubElement(workbook,'{'+NS+'}sheets')
         for i,(name,note,section_rows) in enumerate(sections,1):
             ET.SubElement(sheets,'{'+NS+'}sheet',{'name':name,'sheetId':str(i),'{'+REL+'}id':f'rId{i}'})
-            sheet,table=build_sheet(period,section_rows,name,note,i)
+            sheet=build_sheet(period,section_rows,name,note,i)
             out.writestr(f'xl/worksheets/sheet{i}.xml',ET.tostring(sheet,encoding='utf-8',xml_declaration=True))
-            out.writestr(f'xl/worksheets/_rels/sheet{i}.xml.rels',rels([('rId1','table',f'../tables/table{i}.xml')]))
-            out.writestr(f'xl/tables/table{i}.xml',ET.tostring(table,encoding='utf-8',xml_declaration=True))
         out.writestr('xl/workbook.xml',ET.tostring(workbook,encoding='utf-8',xml_declaration=True))
         out.writestr('xl/_rels/workbook.xml.rels',rels([(f'rId{i}','worksheet',f'worksheets/sheet{i}.xml') for i in range(1,len(sections)+1)]+[(f'rId{len(sections)+1}','styles','styles.xml')]))
         out.writestr('xl/styles.xml',styles)

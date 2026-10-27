@@ -15,14 +15,15 @@ class ReportExcelTests(unittest.TestCase):
         with zipfile.ZipFile(io.BytesIO(report_xlsx(self.period,rows))) as z:
             self.assertIsNone(z.testzip())
             return {name:ET.fromstring(z.read(name)) for name in z.namelist()}
-    def test_native_columns_filter_and_frozen_headers(self):
+    def test_plain_columns_and_frozen_headers(self):
         parts=self.parts([('Показатель','Группа','Значение',2,1,1)])
         ns={'s':'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
-        sheet=parts['xl/worksheets/sheet1.xml'];table=parts['xl/tables/table1.xml']
+        sheet=parts['xl/worksheets/sheet1.xml']
         self.assertEqual(sheet.find('s:sheetViews/s:sheetView/s:pane',ns).get('topLeftCell'),'A7')
-        self.assertEqual(table.get('ref'),'A6:F7')
-        self.assertEqual(table.find('s:autoFilter',ns).get('ref'),'A6:F7')
-        self.assertEqual([c.get('name') for c in table.find('s:tableColumns',ns)],HEADERS)
+        self.assertIsNone(sheet.find('s:autoFilter',ns))
+        self.assertIsNone(sheet.find('s:tableParts',ns))
+        self.assertFalse(any(name.startswith('xl/tables/') for name in parts))
+        self.assertEqual([t.text for t in sheet.findall("s:sheetData/s:row[@r='6']/s:c/s:is/s:t",ns)],HEADERS)
         cells={c.get('r'):c for c in sheet.findall('s:sheetData/s:row/s:c',ns)}
         self.assertEqual(cells['D7'].find('s:v',ns).text,'2')
         self.assertNotIn('t',cells['D7'].attrib)

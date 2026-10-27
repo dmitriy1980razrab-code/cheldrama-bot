@@ -524,7 +524,7 @@ class PanelHttpTests(StaffTests):
             self.assertEqual(response.headers.get_content_type(),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
             self.assertIn('.xlsx',response.headers.get('Content-Disposition',''))
             with zipfile.ZipFile(io.BytesIO(response.read())) as book:
-                self.assertIn('xl/tables/table1.xml',book.namelist())
+                self.assertIn('xl/worksheets/sheet1.xml',book.namelist())
         self.login('support')
         self.assertEqual(self.request('/reports.xlsx')[0],403)
 
