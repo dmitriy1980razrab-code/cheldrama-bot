@@ -124,13 +124,19 @@ def _page(title: str, body: str) -> bytes:
     return f"""<!doctype html>
 <html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
 <title>{escape(title)}</title><style>
-body{{font:16px Arial,sans-serif;margin:0;background:#f4f7fb;color:#111}}
-header{{background:#1769aa;color:#fff;padding:18px 5%}}main{{max-width:1100px;margin:24px auto;padding:0 20px}}
-.box{{background:#fff;border-radius:12px;padding:20px;margin-bottom:18px;box-shadow:0 2px 12px #0001}}
-table{{width:100%;border-collapse:collapse}}th,td{{padding:10px;border-bottom:1px solid #dde5ee;text-align:left}}
-input,select,textarea,button{{font:inherit;padding:9px;margin:5px 0;box-sizing:border-box}}textarea{{width:100%;min-height:90px}}
-button{{background:#1769aa;color:#fff;border:0;border-radius:7px;cursor:pointer}}.note{{color:#4d5b6a}}
+*{{box-sizing:border-box}}body{{font:16px/1.5 Arial,sans-serif;margin:0;background:#f3f7fb;color:#172536}}
+header{{background:#1769aa;color:#fff;padding:18px max(20px,calc((100% - 1100px)/2))}}header h1{{font-size:22px;margin:0}}
+main{{max-width:1100px;margin:24px auto;padding:0 20px}}h2{{font-size:25px;line-height:1.25}}h3{{line-height:1.3}}
+a{{color:#145f9b}}a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{{outline:3px solid #eaa929;outline-offset:2px}}
+.box,.ticket-card{{background:#fff;border:1px solid #dce6ef;border-radius:12px;padding:20px;margin-bottom:14px;box-shadow:0 3px 12px #17395b0a}}
+.table-wrap{{overflow-x:auto}}table{{width:100%;border-collapse:collapse;min-width:620px}}th,td{{padding:10px;border-bottom:1px solid #dde5ee;text-align:left;vertical-align:top}}th{{background:#eef5fb}}
+input,select,textarea,button{{font:inherit;padding:10px;margin:5px 0;border-radius:7px}}input,select,textarea{{border:1px solid #9bafc0;max-width:100%;background:#fff}}textarea{{width:100%;min-height:110px}}
+button{{background:#1769aa;color:#fff;border:0;cursor:pointer;min-height:44px}}button:hover{{background:#125487}}.note{{color:#4d5b6a}}
 .ok{{background:#e8f5eb;padding:12px;border-radius:8px}}label{{display:block;margin-top:8px}}
+.menu-grid{{list-style:none;padding:0;display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}}
+.menu-grid a{{display:block;background:#fff;border:1px solid #d5e2ee;border-radius:12px;padding:20px;font-weight:bold;text-decoration:none;min-height:70px}}.menu-grid a:hover{{border-color:#1769aa;background:#f9fcff}}
+.ticket-card a{{font-weight:bold;font-size:18px}}.ticket-card p{{margin:4px 0}}pre{{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit}}
+@media(max-width:600px){{main{{margin:16px auto;padding:0 14px}}header h1{{font-size:19px}}.box,.ticket-card{{padding:15px}}input:not([type=checkbox]):not([type=hidden]),select,textarea{{width:100%}}.menu-grid{{grid-template-columns:1fr}}}}
 </style></head><body><header><h1>Ваш капельдинер — администрация</h1></header><main>{body}</main></body></html>""".encode("utf-8")
 
 

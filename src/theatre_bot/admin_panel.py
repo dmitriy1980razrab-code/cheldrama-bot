@@ -39,8 +39,8 @@ def hidden(name,value):
 
 
 def table(headers,rows):
-    return '<table><thead><tr>'+''.join('<th>'+esc(str(h))+'</th>' for h in headers)+'</tr></thead><tbody>'+''.join(
-        '<tr>'+''.join('<td>'+esc(str(x if x is not None else '—'))+'</td>' for x in row)+'</tr>' for row in rows)+'</tbody></table>'
+    return '<div class="table-wrap"><table><thead><tr>'+''.join('<th>'+esc(str(h))+'</th>' for h in headers)+'</tr></thead><tbody>'+''.join(
+        '<tr>'+''.join('<td>'+esc(str(x if x is not None else '—'))+'</td>' for x in row)+'</tr>' for row in rows)+'</tbody></table></div>'
 
 
 class PanelSecurity:
@@ -103,7 +103,7 @@ def dashboard(db,user,csrf):
     if user['role']=='advertising': links += [('/audience','Аудитория')]
     if user['role']=='advertising': links += [('/campaigns','Рассылки'),('/accounts','Сотрудники'),('/audit','Журнал действий'),('/delivery','Доставка')]
     if user['role'] in ROLE_DEPARTMENTS: links += [('/tickets',f'Обращения · новых: {stats}')]
-    body=f'<p>{esc(user["username"])} · {esc(ROLES[user["role"]])}</p><ul>'+''.join(
+    body=f'<h2>Рабочая панель</h2><p>{esc(user["username"])} · {esc(ROLES[user["role"]])}</p><ul class="menu-grid">'+''.join(
         f'<li><a href="{url}">{esc(label)}</a></li>' for url,label in links)+'</ul>'
     body+='<p><a href="/profile">Мой пароль и оповещения</a></p>'+form('/logout',csrf,'<button>Выйти</button>')
     return body
@@ -304,7 +304,7 @@ def create_panel_handler(database_path,theatre_path,protector,security,*,campaig
                     for t in db.execute('''SELECT t.*,s.channel,u.username FROM feedback_tickets t
                         JOIN subscribers s ON s.id=t.subscriber_id LEFT JOIN admin_users u ON u.id=t.assigned_to
                         WHERE t.department=? ORDER BY CASE t.status WHEN 'new' THEN 0 WHEN 'working' THEN 1 ELSE 2 END,t.updated_at DESC LIMIT 200''',(dep,)):
-                        body+=f'<p><a href="/ticket?id={t["id"]}">№{t["id"]}</a> · {esc(t["channel"])} · {esc(STATUS_NAMES.get(t["status"],t["status"]))} · {esc(t["username"] or "не назначен")} · {esc(t["updated_at"])}</p>'
+                        body+=f'<section class="ticket-card"><a href="/ticket?id={t["id"]}">Обращение №{t["id"]}</a><p>{esc(t["channel"].upper())} · {esc(STATUS_NAMES.get(t["status"],t["status"]))}</p><p>Ответственный: {esc(t["username"] or "не назначен")} · {esc(t["updated_at"])}</p></section>'
                     with db:
                         cursor=db.execute("SELECT COALESCE(MAX(m.id),0) FROM feedback_alert_events m JOIN feedback_tickets t ON t.id=m.ticket_id WHERE t.department=?",(dep,)).fetchone()[0]
                         db.execute('UPDATE admin_users SET alert_cursor=MAX(alert_cursor,?) WHERE id=?',(cursor,user['id']))
