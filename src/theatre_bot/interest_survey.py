@@ -8,7 +8,7 @@ import secrets
 from theatre_bot.channels import OutgoingButton, OutgoingMessage
 from theatre_bot.dialog import Reply
 from theatre_bot.notifications import THEATRE_TIMEZONE
-from theatre_bot.interest_preferences import (genre_options, artist_options, current_preferences,
+from theatre_bot.interest_preferences import (genre_options, artist_options, play_options, season_year, current_preferences,
     personal_data_granted, save_preferences, delete_preferences)
 from theatre_bot.spam_protection import normalize_message
 from theatre_bot.subscribers import record_consent, _timestamp
@@ -110,25 +110,28 @@ class InterestSurvey:
         data = {}
         self._save(message, 'intro', data, now)
         return self._reply(message, data,
-            'Выберите жанры, любимых артистов и интерес к премьерам, чтобы театр мог предлагать подходящие спектакли, акции и приглашения. '
+            'Выберите жанры, спектакли на сезон, любимых артистов и интерес к премьерам, чтобы театр мог предлагать подходящие спектакли, акции и приглашения. '
             'Анкета добровольная, вопросы можно пропустить, ответы — изменить или удалить. Разрешение на рекламу запрашивается отдельно.',
             [('begin','Начать'),('delete','Удалить данные анкеты'),('legal','Правовые документы'),('cancel','Пропустить')])
 
     def _begin_choices(self, message, now):
-        data = current_preferences(self.db, self.protector, message.channel, message.external_user_id)
-        data.update(genre_options=genre_options(self.theatre), artist_options=artist_options(self.theatre), page=0, search='')
+        data = current_preferences(self.db, self.protector, message.channel, message.external_user_id, now)
+        data.update(genre_options=genre_options(self.theatre), artist_options=artist_options(self.theatre), play_options=play_options(self.theatre), page=0, search='')
         return self._sections(message, data, now)
 
     def _sections(self, message, data, now):
+        data.setdefault('plays', [])
+        data.setdefault('play_options', play_options(self.theatre))
         self._save(message, 'sections', data, now)
         genres = ', '.join(v['label'] for v in data['genre_options'] if v['key'] in data['genres']) or 'не выбраны'
         artists = ', '.join(v['label'] for v in data['artist_options'] if v['key'] in data['artists']) or 'не выбраны'
+        plays = ', '.join(v['label'] for v in data.get('play_options',[]) if v['key'] in data.get('plays',[])) or 'не выбраны'
         premieres = 'да' if data['premieres'] else 'нет'
         return self._reply(message, data,
             f'Анкета интересов. Выберите раздел, который хотите заполнить или изменить.\n'
-            f'Жанры: {genres}.\nАртисты: {artists}.\nПремьеры: {premieres}.\n'
+            f'Жанры: {genres}.\nСпектакли: {plays}.\nАртисты: {artists}.\nПремьеры: {premieres}.\n'
             'Любой раздел можно оставить без выбора. Для выхода напишите «Отмена».',
-            [('genres','Жанры'),('artists','Артисты'),('premieres','Премьеры'),('finish','Завершить анкету'),('delete','Удалить данные анкеты')])
+            [('genres','Жанры'),('plays','Спектакли'),('artists','Артисты'),('premieres','Премьеры'),('finish','Завершить анкету'),('delete','Удалить данные анкеты')])
 
     def _premieres(self, message, data, now):
         self._save(message, 'premieres', data, now)
@@ -143,7 +146,7 @@ class InterestSurvey:
             [('allow','Сохранить'),('decline','Не сохранять'),('sections','Изменить ответы')])
 
     def _choices(self, message, stage, data, now):
-        options = data['genre_options' if stage=='genres' else 'artist_options']
+        options = data[{'genres':'genre_options','artists':'artist_options','plays':'play_options'}[stage]]
         if stage=='artists' and data.get('search'):
             options = [v for v in options if data['search'] in normalize_message(v['label']).replace('ё','е')]
         page_count = max(1, (len(options)+PAGE_SIZE-1)//PAGE_SIZE)
@@ -155,11 +158,11 @@ class InterestSurvey:
         selected = set(data[stage])
         buttons = [(f'toggle:{i}', ('✓ ' if v['key'] in selected else '')+v['label'][:35]) for i, v in enumerate(visible)]
         if page_count>1:
-            buttons.append(('page', 'Ещё жанры' if stage=='genres' else 'Ещё артисты'))
+            buttons.append(('page', {'genres':'Ещё жанры','artists':'Ещё артисты','plays':'Ещё спектакли'}[stage]))
         buttons.append(('clear', 'Снять все отметки'))
         buttons.append(('next', 'К разделам анкеты'))
-        heading = 'Какие жанры Вам интересны?' if stage=='genres' else 'Кого из артистов Вы хотели бы видеть на сцене?\nМожно ввести фамилию для поиска; «Все артисты» — вернуть список.'
-        all_options = data['genre_options' if stage=='genres' else 'artist_options']
+        heading = {'genres':'Какие жанры Вам интересны?', 'artists':'Кого из артистов Вы хотели бы видеть на сцене?\nМожно ввести фамилию для поиска; «Все артисты» — вернуть список.', 'plays':f'Какие спектакли Вам интересны для рекламных предложений на сезон {season_year(now)}/{season_year(now)+1} (1 сентября — 10 июля)? Выбор действует только в этом сезоне.'}[stage]
+        all_options = data[{'genres':'genre_options','artists':'artist_options','plays':'play_options'}[stage]]
         labels = [v['label'] for v in all_options if v['key'] in selected]
         summary = ', '.join(labels) if labels else 'пока ничего'
         text = heading+f'\nВыбрано: {summary}.\nМожно выбрать несколько вариантов. Повторное нажатие снимает выбор.\nДля выхода напишите «Отмена».'
@@ -197,7 +200,7 @@ class InterestSurvey:
             self._save(message, 'delete_confirm', {}, now)
             _, confirmation = self._load(message, now)
             return self._reply(message, confirmation,
-                'Удалить все данные анкеты: жанры, артистов и интерес к премьерам? '
+                'Удалить все данные анкеты: жанры, спектакли, артистов и интерес к премьерам? '
                 'Согласие на рекламные сообщения будет отозвано. Подписки на показы сохранятся.',
                 [('delete_yes','Да, удалить'),('delete_back','Не удалять')])
         if stage=='delete_confirm' and action=='delete_back':
@@ -227,17 +230,17 @@ class InterestSurvey:
             record_consent(self.db, self.protector, message.channel, message.external_user_id,
                 'personal_data', DOCUMENT_VERSIONS['personal_data'], True, 'interest_survey', at=now, display_name=message.display_name)
             return self._begin_choices(message, now)
-        if stage=='sections' and action in {'genres','artists','premieres','finish'}:
+        if stage=='sections' and action in {'genres','plays','artists','premieres','finish'}:
             data['page'] = 0
             data['search'] = ''
-            if action in {'genres','artists'}:
+            if action in {'genres','plays','artists'}:
                 return self._choices(message, action, data, now)
             if action=='premieres':
                 return self._premieres(message, data, now)
             return self._finish(message, data, now)
         if stage=='marketing' and action=='sections':
             return self._sections(message, data, now)
-        if stage in {'genres','artists'}:
+        if stage in {'genres','plays','artists'}:
             if action=='clear':
                 data[stage] = []
                 return self._choices(message, stage, data, now)
@@ -271,7 +274,7 @@ class InterestSurvey:
             try:
                 save_preferences(self.db, self.theatre, self.protector, message.channel, message.external_user_id,
                     message.display_name, data['genres'], data['artists'], data['premieres'], action=='allow',
-                    DOCUMENT_VERSIONS['marketing'], now=now, survey_actor=self._actor(message), survey_token=data['token'])
+                    DOCUMENT_VERSIONS['marketing'], now=now, survey_actor=self._actor(message), survey_token=data['token'], plays=data.get('plays'))
             except LookupError:
                 return OutgoingMessage(message.channel, message.external_user_id,
                     Reply('Эта кнопка анкеты уже неактуальна. Напишите «Анкета интересов», чтобы открыть её заново.'))

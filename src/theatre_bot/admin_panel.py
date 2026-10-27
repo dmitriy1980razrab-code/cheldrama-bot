@@ -160,18 +160,31 @@ def report_page(db,user,query,theatre=None):
     return body,rows
 
 
+def campaign_targets(db,theatre):
+    from theatre_bot.interest_preferences import genre_options,artist_options
+    genres={v['key']:v['label'] for v in genre_options(theatre)}
+    artists={v['key']:v['label'] for v in artist_options(theatre)}
+    plays={r['source_url']:r['title'] for r in theatre.execute('SELECT source_url,title FROM plays WHERE is_active=1')}
+    plays.update({r['preference_key']:r['preference_label'] for r in db.execute("SELECT DISTINCT preference_key,preference_label FROM preferences WHERE preference_type='play'")})
+    return {'genre':genres,'play':plays,'artist':artists}
+
+
 def campaign_page(db,theatre,user,csrf,enabled):
     require(user,'campaigns')
-    options='<option value="all|">Вся разрешённая аудитория</option>'
-    from theatre_bot.interest_preferences import genre_options,artist_options
-    catalog=[('genre',v['key'],v['label']) for v in genre_options(theatre)]+[('artist',v['key'],v['label']) for v in artist_options(theatre)]
-    catalog += [('play',r['preference_key'],r['preference_label']) for r in db.execute("SELECT DISTINCT preference_key,preference_label FROM preferences WHERE preference_type='play'")]
-    options+=''.join(f'<option value="{esc(kind+"|"+key)}">{esc(label)}</option>' for kind,key,label in catalog)
+    catalog=campaign_targets(db,theatre)
+    choices=''
+    index=0
+    for kind,title in [('genre','Жанры'),('play','Спектакли'),('artist','Артисты')]:
+        choices+=f'<details><summary>{title}</summary><label><input type="checkbox" name="target_all_{kind}" value="1"> Выбрать все: {title.lower()}</label>'
+        for key,label in sorted(catalog[kind].items(),key=lambda item:item[1].casefold()):
+            choices+=f'<label><input type="checkbox" name="choice_{index}" value="{esc(kind+"|"+key)}"> {esc(label)}</label>'
+            index+=1
+        choices+='</details>'
     body='<h2>Рассылки</h2><p>Только активные профили с рекламным согласием. Интервал рекламных сообщений — не чаще одного за 7 дней.</p>'
     if not enabled: body+='<p class="ok">Планирование отправки выключено в настройках сервера. Доступны черновики и предпросмотр.</p>'
     body+=form('/campaign/create',csrf,f'''<label>Название <input name="name" maxlength="120" required></label>
         <label>Канал <select name="channel"><option value="vk">VK</option><option value="max">MAX</option><option value="all">VK и MAX</option></select></label>
-        <label>Аудитория <select name="target">{options}</select></label><label><input type="checkbox" name="premieres" value="1"> Только интересующиеся премьерами</label>
+        <label><input type="checkbox" name="audience_all" value="1"> Вся разрешённая аудитория</label>{choices}<p>Отметьте всю аудиторию или нужные варианты. Совпадение хотя бы с одним пунктом включает зрителя в рассылку один раз. Спектакли — интерес из анкеты на текущий сезон. Подписка на отдельный показ не добавляет зрителя в эту аудиторию.</p><label><input type="checkbox" name="premieres" value="1"> Только интересующиеся премьерами</label>
         <label>Сообщение <textarea name="message" maxlength="2000" required></textarea></label><button>Сохранить черновик и посмотреть</button>''')
     counts={}
     for row in db.execute('SELECT campaign_id,status,count(*) AS total FROM campaign_recipients GROUP BY campaign_id,status'):
@@ -229,8 +242,8 @@ def create_panel_handler(database_path,theatre_path,protector,security,*,campaig
             if not self.headers.get('Content-Type','').startswith('application/x-www-form-urlencoded'): raise ValueError('Формат запроса недоступен')
             try: size=int(self.headers.get('Content-Length','0'))
             except ValueError: raise ValueError('Некорректный размер запроса')
-            if not 0<size<=16384: raise ValueError('Размер запроса недопустим')
-            try: values=parse_qs(self.rfile.read(size).decode('utf-8'),keep_blank_values=True,max_num_fields=30)
+            if not 0<size<=131072: raise ValueError('Размер запроса недопустим')
+            try: values=parse_qs(self.rfile.read(size).decode('utf-8'),keep_blank_values=True,max_num_fields=550)
             except (UnicodeDecodeError,ValueError): raise ValueError('Некорректный запрос')
             if any(len(v)!=1 for v in values.values()): raise ValueError('Повторяющиеся поля')
             return {k:v[0] for k,v in values.items()}
@@ -379,25 +392,35 @@ def create_panel_handler(database_path,theatre_path,protector,security,*,campaig
                 if path.startswith('/campaign/'):
                     require(user,'campaigns');action=path.split('/')[-1]
                     if action=='create':
-                        kind,key=values.get('target','').split('|',1)
-                        if kind!='all':
-                            theatre=connect(theatre_path)
-                            try:
-                                from theatre_bot.interest_preferences import genre_options,artist_options
-                                if kind=='genre':catalog={v['key']:v['label'] for v in genre_options(theatre)}
-                                elif kind=='artist':catalog={v['key']:v['label'] for v in artist_options(theatre)}
-                                elif kind=='play':catalog={r['preference_key']:r['preference_label'] for r in db.execute("SELECT preference_key,preference_label FROM preferences WHERE preference_type='play'")}
-                                else:raise ValueError()
-                                label=catalog[key]
-                            finally:theatre.close()
-                        else:label='Вся аудитория'
-                        cid=create_campaign(db,values.get('name','')[:120],values.get('message',''),user['username'],channel=values.get('channel','vk'),target_type=kind,target_key=key or None,target_label=label,premieres_only=values.get('premieres')=='1')
+                        theatre=connect(theatre_path)
+                        try:catalog=campaign_targets(db,theatre)
+                        finally:theatre.close()
+                        legacy=values.get('target')
+                        selected=set()
+                        for field,value in values.items():
+                            if field.startswith('choice_'):
+                                kind,key=value.split('|',1)
+                                if kind not in catalog or key not in catalog[kind]:raise ValueError('Неизвестная аудитория')
+                                selected.add((kind,key,catalog[kind][key]))
+                        for kind in catalog:
+                            if values.get('target_all_'+kind)=='1':
+                                selected.update((kind,key,label) for key,label in catalog[kind].items())
+                        if legacy and legacy!='all|':
+                            kind,key=legacy.split('|',1)
+                            if kind not in catalog or key not in catalog[kind]:raise ValueError('Неизвестная аудитория')
+                            selected.add((kind,key,catalog[kind][key]))
+                        all_audience=values.get('audience_all')=='1' or legacy=='all|'
+                        if all_audience and selected:raise ValueError('Выберите всю аудиторию или отдельные интересы')
+                        if not all_audience and not selected:raise ValueError('Выберите аудиторию')
+                        cid=create_campaign(db,values.get('name','')[:120],values.get('message',''),user['username'],channel=values.get('channel','vk'),target_type='all',target_label='Вся аудитория' if all_audience else 'Выбранные интересы',premieres_only=values.get('premieres')=='1',targets=sorted(selected) if selected else None)
                         action='preview'
                     else:cid=int(values.get('id','0'))
                     if action=='preview':
                         preview=preview_campaign(db,protector,cid,user['username'],'staff_panel')
                         c=db.execute('SELECT * FROM campaigns WHERE id=?',(cid,)).fetchone()
                         body=f'<h2>{esc(c["name"])}</h2><pre style="white-space:pre-wrap">{esc(c["message"])}</pre><p>Получателей сейчас: {preview.total}. Аудитория пересчитывается перед отправкой.</p>'
+                        target_rows=db.execute('SELECT target_type,target_label FROM campaign_targets WHERE campaign_id=? ORDER BY target_type,target_label',(cid,)).fetchall()
+                        body+='<p>Аудитория: '+esc(', '.join(r['target_label'] for r in target_rows) if target_rows else c['target_label'] or 'Вся аудитория')+'</p>'
                         body+=table(['Канал','Получателей'],preview.by_channel.items())+form('/campaign/approve',csrf,hidden('id',cid)+'<label><input type="checkbox" name="confirm" value="yes" required> Текст и аудитория проверены</label><button>Подтвердить кампанию</button>')
                         self.page('Предпросмотр',body);return
                     if action=='approve':

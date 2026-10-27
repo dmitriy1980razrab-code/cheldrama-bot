@@ -74,6 +74,23 @@ CREATE TABLE IF NOT EXISTS subscriber_access_log (
 CREATE INDEX IF NOT EXISTS idx_subscriber_access_log_time
     ON subscriber_access_log(accessed_at);
 
+CREATE TABLE IF NOT EXISTS survey_play_interests (
+    subscriber_id INTEGER NOT NULL REFERENCES subscribers(id),
+    play_key TEXT NOT NULL,
+    play_label TEXT NOT NULL,
+    season_start_year INTEGER NOT NULL,
+    recorded_at TEXT NOT NULL,
+    PRIMARY KEY (subscriber_id, play_key)
+);
+
+CREATE TABLE IF NOT EXISTS campaign_targets (
+    campaign_id INTEGER NOT NULL REFERENCES campaigns(id),
+    target_type TEXT NOT NULL CHECK (target_type IN ('play','genre','artist')),
+    target_key TEXT NOT NULL,
+    target_label TEXT NOT NULL,
+    PRIMARY KEY (campaign_id, target_type, target_key)
+);
+
 CREATE TABLE IF NOT EXISTS campaigns (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,

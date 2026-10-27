@@ -1,5 +1,6 @@
 """Explicit questionnaire preferences and atomic saving of advertising permission."""
 import json
+from datetime import datetime, timezone, timedelta
 from theatre_bot.marketing_reports import preference_snapshot, record_preference_changes
 from theatre_bot.subscribers import _has_current_consent, _get_or_create_subscriber, _timestamp
 
@@ -24,26 +25,40 @@ def artist_options(theatre):
         'SELECT source_url, full_name FROM artists WHERE is_active=1 ORDER BY full_name, id')]
 
 
+def play_options(theatre):
+    return [{'key': row['source_url'], 'label': row['title']} for row in theatre.execute(
+        'SELECT source_url, title FROM plays WHERE is_active=1 ORDER BY title, id')]
+
+
+def season_year(now=None):
+    moment = now or datetime.now(timezone.utc)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    day = moment.astimezone(timezone(timedelta(hours=5))).date()
+    return day.year if (day.month, day.day) >= (7, 11) else day.year-1
+
+
 def personal_data_granted(db, protector, channel, external_id):
     row = db.execute('SELECT id FROM subscribers WHERE channel=? AND external_id_hash=?',
                      (channel, protector.lookup_hash(channel, external_id))).fetchone()
     return bool(row and _has_current_consent(db, row['id'], 'personal_data'))
 
 
-def current_preferences(db, protector, channel, external_id):
+def current_preferences(db, protector, channel, external_id, now=None):
     row = db.execute('SELECT id, interested_in_premieres FROM subscribers WHERE channel=? AND external_id_hash=?',
                      (channel, protector.lookup_hash(channel, external_id))).fetchone()
     if row is None:
-        return {'genres': [], 'artists': [], 'premieres': False}
+        return {'genres': [], 'artists': [], 'plays': [], 'premieres': False}
     rows = db.execute("SELECT preference_type, preference_key FROM preferences WHERE subscriber_id=? AND source='interest_survey'", (row['id'],)).fetchall()
     return {'genres': [r['preference_key'] for r in rows if r['preference_type']=='genre'],
             'artists': [r['preference_key'] for r in rows if r['preference_type']=='artist'],
+            'plays': [r[0] for r in db.execute('SELECT play_key FROM survey_play_interests WHERE subscriber_id=? AND season_start_year=?',(row['id'],season_year(now)))],
             'premieres': bool(row['interested_in_premieres'])}
 
 
 def save_preferences(db, theatre, protector, channel, external_id, display_name,
                      genres, artists, premieres, marketing, document_version, now=None,
-                     *, survey_actor=None, survey_token=None):
+                     *, survey_actor=None, survey_token=None, plays=None):
     if not marketing:
         raise ValueError('advertising permission required to save interests')
     if not personal_data_granted(db, protector, channel, external_id):
@@ -53,6 +68,10 @@ def save_preferences(db, theatre, protector, channel, external_id, display_name,
     selected = {'genre': set(genres), 'artist': set(artists)}
     if any(len(values)>20 or not values.issubset(catalog[kind]) for kind, values in selected.items()):
         raise ValueError('selection is no longer available')
+    play_catalog={v['key']:v['label'] for v in play_options(theatre)}
+    play_selection=None if plays is None else set(plays)
+    if play_selection is not None and (len(play_selection)>20 or not play_selection.issubset(play_catalog)):
+        raise ValueError('play selection is no longer available')
     db.execute('BEGIN IMMEDIATE')
     try:
         if survey_actor is not None:
@@ -66,6 +85,11 @@ def save_preferences(db, theatre, protector, channel, external_id, display_name,
         subscriber_id = _get_or_create_subscriber(db, protector, channel, external_id, now, display_name)
         stamp = _timestamp(now)
         before = preference_snapshot(db, subscriber_id)
+        if play_selection is not None:
+            db.execute('DELETE FROM survey_play_interests WHERE subscriber_id=?',(subscriber_id,))
+            for key in sorted(play_selection):
+                db.execute('INSERT INTO survey_play_interests VALUES (?,?,?,?,?)',
+                    (subscriber_id,key,play_catalog[key],season_year(now),stamp))
         db.execute("UPDATE subscribers SET status='active', interested_in_premieres=?, updated_at=? WHERE id=?",
                    (int(premieres), stamp, subscriber_id))
         db.execute("DELETE FROM preferences WHERE subscriber_id=? AND source='interest_survey' AND preference_type IN ('genre','artist')", (subscriber_id,))
@@ -106,6 +130,7 @@ def delete_preferences(db, protector, channel, external_id, document_version,
         stamp = _timestamp(now)
         if row:
             before = preference_snapshot(db, row['id'])
+            db.execute('DELETE FROM survey_play_interests WHERE subscriber_id=?',(row['id'],))
             db.execute("DELETE FROM preferences WHERE subscriber_id=? AND source='interest_survey'", (row['id'],))
             db.execute('UPDATE subscribers SET interested_in_premieres=0, updated_at=? WHERE id=?', (stamp, row['id']))
             db.execute("""INSERT INTO consent_events

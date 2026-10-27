@@ -52,7 +52,7 @@ def create_campaign(
     target_key: str | None = None,
     target_label: str | None = None,
     at: datetime | None = None,
-    *, premieres_only: bool = False,
+    *, premieres_only: bool = False, targets=None,
 ) -> int:
     actor = _require_actor(created_by)
     if channel not in ALLOWED_CHANNELS:
@@ -65,6 +65,9 @@ def create_campaign(
         raise ValueError("campaign name and message are required")
     if len(message) > 2000:
         raise ValueError("campaign message is too long")
+    if targets is not None and (target_type != 'all' or not targets or len(targets)>500 or
+        any(kind not in {'play','artist','genre'} or not key for kind,key,label in targets)):
+        raise ValueError('invalid campaign targets')
     timestamp = _timestamp(at)
     with connection:
         cursor = connection.execute(
@@ -89,6 +92,9 @@ def create_campaign(
             """,
             (cursor.lastrowid, actor, timestamp),
         )
+        if targets:
+            connection.executemany('INSERT INTO campaign_targets (campaign_id,target_type,target_key,target_label) VALUES (?,?,?,?)',
+                [(cursor.lastrowid,kind,key,label) for kind,key,label in targets])
     return cursor.lastrowid
 
 
@@ -104,6 +110,9 @@ def _eligible_rows(
     cutoff = (current.astimezone(timezone.utc) - timedelta(days=min_interval_days)).isoformat(
         timespec="seconds"
     )
+    local=current.astimezone(timezone(timedelta(hours=5))).date()
+    season=local.year if local.month>=9 else local.year-1
+    in_season=(local.month>=9 or (local.month,local.day)<=(7,10))
     query = """
         SELECT s.* FROM subscribers s
         WHERE s.status = 'active'
@@ -122,6 +131,15 @@ def _eligible_rows(
                     AND p.preference_type = ? AND p.preference_key = ?
               )
           )
+          AND (NOT EXISTS (SELECT 1 FROM campaign_targets ct WHERE ct.campaign_id=?) OR EXISTS (
+              SELECT 1 FROM campaign_targets ct WHERE ct.campaign_id=? AND (
+                  (ct.target_type!='play' AND EXISTS (SELECT 1 FROM preferences p WHERE p.subscriber_id=s.id
+                    AND p.preference_type=ct.target_type AND p.preference_key=ct.target_key))
+                  OR (ct.target_type='play' AND ?=1 AND EXISTS (
+                    SELECT 1 FROM survey_play_interests sp WHERE sp.subscriber_id=s.id
+                    AND sp.play_key=ct.target_key AND sp.season_start_year=?))
+              )
+          ))
           AND NOT EXISTS (
               SELECT 1 FROM campaign_recipients cr
               WHERE cr.subscriber_id = s.id AND cr.status = 'sent'
@@ -134,7 +152,7 @@ def _eligible_rows(
         (
             campaign["channel"], campaign["channel"], int(campaign["premieres_only"]),
             campaign["target_type"], campaign["target_type"],
-            campaign["target_key"], cutoff,
+            campaign["target_key"], campaign['id'], campaign['id'], int(in_season), season, cutoff,
         ),
     ).fetchall()
 

@@ -15,7 +15,7 @@ from cryptography.fernet import Fernet
 from theatre_bot.subscribers import connect_subscribers,initialize_subscribers,IdentityProtector,record_consent
 from theatre_bot.database import connect,initialize
 from theatre_bot.admin_access import create_staff,require,password_matches,set_staff_active
-from theatre_bot.admin_panel import PanelSecurity,create_panel_handler,cancel_campaign,campaign_page
+from theatre_bot.admin_panel import PanelSecurity,create_panel_handler,cancel_campaign,campaign_page,campaign_targets
 from theatre_bot.feedback import FeedbackFlow,staff_reply,authorized_ticket,change_ticket,queue_staff_alerts
 from theatre_bot.channels import IncomingMessage
 from theatre_bot.marketing_reports import report_rows
@@ -67,6 +67,32 @@ class StaffTests(unittest.TestCase):
         for role in ('analytics','observer','support'):
             with self.assertRaises(PermissionError):
                 campaign_page(self.db,self.theatre,self.user(role),'token',False)
+
+    def test_campaign_targets_include_catalog_plays_without_subscribers(self):
+        self.theatre.execute("INSERT INTO plays(source_url,title,normalized_title,synced_at) VALUES (?,?,?,?)",('https://example.test/play','Пример спектакля','пример спектакля',self.now.isoformat()))
+        targets=campaign_targets(self.db,self.theatre)
+        self.assertEqual(targets['play']['https://example.test/play'],'Пример спектакля')
+        page=campaign_page(self.db,self.theatre,self.user('advertising'),'token',False)
+        for group in ('Жанры','Спектакли','Артисты'):
+            self.assertIn('<summary>'+group+'</summary>',page)
+        self.assertIn('Пример спектакля',page)
+        cid=create_campaign(self.db,'Проба','Текст','advertising',target_type='play',target_key='https://example.test/play',at=self.now)
+        from theatre_bot.campaigns import preview_campaign
+        self.assertEqual(preview_campaign(self.db,self.protector,cid,'advertising','test',at=self.now).total,0)
+
+    def test_multiple_campaign_interests_match_once_and_season_expires(self):
+        record_consent(self.db,self.protector,'vk','123','marketing','draft-v1',True,'test',at=self.now)
+        subscriber=self.db.execute('SELECT id FROM subscribers LIMIT 1').fetchone()[0]
+        with self.db:
+            self.db.execute("UPDATE subscribers SET status='active' WHERE id=?",(subscriber,))
+            self.db.execute("INSERT INTO preferences (subscriber_id,preference_type,preference_key,preference_label,source,recorded_at) VALUES (?,'genre','comedy','Комедия','interest_survey',?)",(subscriber,self.now.isoformat()))
+            self.db.execute('INSERT INTO survey_play_interests VALUES (?,?,?,?,?)',(subscriber,'play1','Спектакль',2026,self.now.isoformat()))
+        from theatre_bot.campaigns import preview_campaign
+        cid=create_campaign(self.db,'Проба','Текст','advertising',targets=[('genre','comedy','Комедия'),('play','play1','Спектакль')],at=self.now)
+        self.assertEqual(preview_campaign(self.db,self.protector,cid,'advertising','test',at=self.now).total,1)
+        play_only=create_campaign(self.db,'Проба 2','Текст','advertising',targets=[('play','play1','Спектакль')],at=self.now)
+        self.assertEqual(preview_campaign(self.db,self.protector,play_only,'advertising','test',at=self.now).total,1)
+        self.assertEqual(preview_campaign(self.db,self.protector,play_only,'advertising','test',at=datetime(2027,7,11,8,tzinfo=timezone.utc)).total,0)
 
     def test_password_is_hashed_and_login_invalidated_on_disable(self):
         security=PanelSecurity();u=self.user('analytics')
@@ -393,6 +419,17 @@ class PanelHttpTests(StaffTests):
         self.assertEqual(status,200)
         token=next(c.value for c in self.cookies if c.name=='staff_session')
         return self.security.sessions[token]['csrf']
+    def test_campaign_multiple_choices_preview_as_single_campaign(self):
+        with self.theatre:
+            self.theatre.execute("INSERT INTO plays(source_url,title,normalized_title,synced_at) VALUES (?,?,?,?)",('https://example.test/play','Спектакль','спектакль',self.now.isoformat()))
+        csrf=self.login('advertising')
+        status,body=self.request('/campaign/create',{'csrf':csrf,'name':'Проба','message':'Текст','channel':'vk',
+            'choice_1':'genre|комедия','choice_2':'play|https://example.test/play'})
+        self.assertEqual(status,200)
+        self.assertIn('Спектакль',body)
+        self.assertIn('Комедия',body)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM campaign_targets').fetchone()[0],2)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM outgoing_reply_queue').fetchone()[0],0)
     def test_observer_cannot_access_audience_tickets_campaigns_or_post(self):
         csrf=self.login('observer')
         self.assertEqual(self.request('/reports')[0],200)

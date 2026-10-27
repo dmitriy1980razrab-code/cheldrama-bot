@@ -15,7 +15,7 @@ from theatre_bot.channel_handler import ChannelMessageHandler
 from theatre_bot.channels import IncomingMessage
 from theatre_bot.dialog import Reply
 from theatre_bot.spam_protection import check_message
-from theatre_bot.interest_preferences import save_preferences, genre_options
+from theatre_bot.interest_preferences import save_preferences, genre_options, season_year
 from theatre_bot.interest_survey import InterestSurvey
 from theatre_bot.campaigns import create_campaign, preview_campaign, approve_campaign, schedule_campaign
 from theatre_bot.campaign_delivery import queue_due_campaigns
@@ -76,6 +76,27 @@ class InterestSurveyTests(unittest.TestCase):
 
     def count(self, table):
         return self.db.execute('SELECT count(*) FROM '+table).fetchone()[0]
+
+    def test_survey_play_interest_saved_for_season_and_can_be_cleared(self):
+        intro=self.send('Анкета интересов')
+        consent=self.click(intro,'Начать')
+        menu=self.click(consent,'Согласен')
+        choices=self.click(menu,'Спектакли')
+        self.assertIn('2026/2027',choices.reply.text)
+        choices=self.click(choices,'Гамлет')
+        menu=self.click(choices,'К разделам анкеты')
+        self.click(self.click(menu,'Завершить анкету'),'Сохранить')
+        self.assertEqual(self.count('survey_play_interests'),1)
+        self.assertEqual(self.count('subscriptions'),0)
+        menu=self.click(self.send('Анкета интересов'),'Начать')
+        choices=self.click(menu,'Спектакли')
+        menu=self.click(self.click(choices,'Снять все отметки'),'К разделам анкеты')
+        self.click(self.click(menu,'Завершить анкету'),'Сохранить')
+        self.assertEqual(self.count('survey_play_interests'),0)
+
+    def test_season_switches_after_july_tenth_in_theatre_time(self):
+        self.assertEqual(season_year(datetime(2027,7,10,18,59,tzinfo=timezone.utc)),2026)
+        self.assertEqual(season_year(datetime(2027,7,10,19,0,tzinfo=timezone.utc)),2027)
 
     def test_first_question_retains_answer_and_adds_brief_invitation_once(self):
         first = self.send('Здравствуйте')
@@ -433,7 +454,7 @@ class InterestSurveyTests(unittest.TestCase):
     def test_section_menu_allows_any_order_and_edit_before_saving(self):
         genres = self.genres()
         menu = self.click(genres, 'К разделам анкеты')
-        self.assertEqual([b.label for b in menu.buttons], ['Жанры','Артисты','Премьеры','Завершить анкету','Удалить данные анкеты'])
+        self.assertEqual([b.label for b in menu.buttons], ['Жанры','Спектакли','Артисты','Премьеры','Завершить анкету','Удалить данные анкеты'])
         menu = self.click(self.click(menu, 'Премьеры'), 'Да')
         artists = self.click(menu, 'Артисты')
         artists = self.click(artists, 'Анна Иванова')
