@@ -21,7 +21,7 @@ def preference_snapshot(db,subscriber_id):
     return values
 
 
-def report_rows(db,user,start,end):
+def report_rows(db,user,start,end,*,play="",genre=""):
     require(user,'reports')
     try:
         first=datetime.strptime(start,'%Y-%m-%d').replace(tzinfo=timezone(timedelta(hours=5)))
@@ -29,19 +29,22 @@ def report_rows(db,user,start,end):
     except (ValueError,TypeError): raise ValueError('Укажите даты отчёта')
     if first>=last or (last-first).days>366: raise ValueError('Период — от 1 до 366 дней')
     bounds=(first.astimezone(timezone.utc).isoformat(),last.astimezone(timezone.utc).isoformat())
+    if len(play)>200 or len(genre)>120:
+        raise ValueError('Некорректный фильтр')
     result=[]
     def add(section,sql,args=()):
         for row in db.execute(sql,args): result.append((section,*tuple(row)))
     add('Профили сейчас',"SELECT channel,status,count(*) FROM subscribers GROUP BY channel,status")
-    add('Рекламное согласие сейчас',"""SELECT channel,'действует',count(*) FROM subscribers s WHERE status='active' AND
+    add('Рекламное согласие сейчас',"""SELECT channel,'действует',SUM(CASE WHEN status='active' AND
         (SELECT action FROM consent_events c WHERE c.subscriber_id=s.id AND consent_type='marketing' ORDER BY id DESC LIMIT 1)='granted'
-        GROUP BY channel""")
-    add('Приоритеты сейчас',"SELECT preference_type,preference_label,count(*) FROM preferences WHERE source='interest_survey' GROUP BY preference_type,preference_key,preference_label ORDER BY count(*) DESC")
-    add('Премьеры сейчас',"SELECT 'premiere','Премьеры',count(*) FROM subscribers WHERE interested_in_premieres=1")
-    add('Изменения предпочтений за период',"SELECT action,preference_label,count(*) FROM preference_changes WHERE recorded_at>=? AND recorded_at<? GROUP BY action,preference_type,preference_label",bounds)
+        THEN 1 ELSE 0 END) FROM subscribers s GROUP BY channel""")
+    add('Приоритеты сейчас',"SELECT preference_type,preference_label,count(*) FROM preferences WHERE source='interest_survey' AND (?='' OR (preference_type='genre' AND preference_label=?)) GROUP BY preference_type,preference_key,preference_label ORDER BY count(*) DESC",(genre,genre))
+    if not genre:
+        add('Премьеры сейчас',"SELECT 'premiere','Премьеры',count(*) FROM subscribers WHERE interested_in_premieres=1")
+    add('Изменения предпочтений за период',"SELECT action,preference_label,count(*) FROM preference_changes WHERE recorded_at>=? AND recorded_at<? AND (?='' OR (preference_type='genre' AND preference_label=?)) GROUP BY action,preference_type,preference_label",(*bounds,genre,genre))
     add('Согласия за период',"SELECT consent_type,action,count(*) FROM consent_events WHERE recorded_at>=? AND recorded_at<? GROUP BY consent_type,action",bounds)
-    add('Подписки на показы за период',"SELECT 'подписка',topic_label,count(*) FROM subscriptions WHERE subscribed_at>=? AND subscribed_at<? GROUP BY topic_key,topic_label",bounds)
-    add('Отписки от показов за период',"SELECT 'отписка',topic_label,count(*) FROM subscriptions WHERE unsubscribed_at>=? AND unsubscribed_at<? GROUP BY topic_key,topic_label",bounds)
+    add('Подписки на показы за период',"SELECT 'подписка',CASE WHEN selected_starts_at IS NOT NULL THEN topic_label || ' · ' || substr(selected_starts_at,9,2) || '.' || substr(selected_starts_at,6,2) || '.' || substr(selected_starts_at,1,4) || ' ' || substr(selected_starts_at,12,5) ELSE topic_label END,count(*) FROM subscriptions WHERE topic_type='play' AND subscribed_at>=? AND subscribed_at<? AND (?='' OR topic_label=?) GROUP BY topic_key,topic_label",(*bounds,play,play))
+    add('Отписки от показов за период',"SELECT 'отписка',CASE WHEN selected_starts_at IS NOT NULL THEN topic_label || ' · ' || substr(selected_starts_at,9,2) || '.' || substr(selected_starts_at,6,2) || '.' || substr(selected_starts_at,1,4) || ' ' || substr(selected_starts_at,12,5) ELSE topic_label END,count(*) FROM subscriptions WHERE topic_type='play' AND unsubscribed_at>=? AND unsubscribed_at<? AND (?='' OR topic_label=?) GROUP BY topic_key,topic_label",(*bounds,play,play))
     add('Результаты кампаний за период',"SELECT 'получатели',cr.status,count(*) FROM campaign_recipients cr JOIN campaigns c ON c.id=cr.campaign_id WHERE COALESCE(cr.sent_at,c.scheduled_at,c.created_at)>=? AND COALESCE(cr.sent_at,c.scheduled_at,c.created_at)<? GROUP BY cr.status",bounds)
     add('Отзыв рекламы в течение 7 дней после кампании (не доказывает причину)',"""SELECT c.name,'профилей',count(DISTINCT cr.subscriber_id)
         FROM campaign_recipients cr JOIN campaigns c ON c.id=cr.campaign_id JOIN consent_events ce ON ce.subscriber_id=cr.subscriber_id

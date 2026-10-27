@@ -109,11 +109,26 @@ def dashboard(db,user,csrf):
     return body
 
 
-def report_page(db,user,query):
+def report_page(db,user,query,theatre=None):
     require(user,'reports')
     period=report_period(query)
-    current=report_rows(db,user,period['from'],period['to'])
-    previous=report_rows(db,user,period['previous_from'],period['previous_to'])
+    play=query.get('play','').strip()
+    genre=query.get('genre','').strip()
+    if len(play)>200 or len(genre)>120:raise ValueError('Некорректный фильтр')
+    from theatre_bot.interest_preferences import GENRE_CATEGORIES
+    genres=[label for _,label in GENRE_CATEGORIES]
+    if genre and genre not in genres:raise ValueError('Неизвестный жанр')
+    titles={row[0] for row in db.execute("SELECT DISTINCT topic_label FROM subscriptions WHERE topic_type='play' AND topic_label!=''")}
+    if theatre is not None:
+        titles.update(row[0] for row in theatre.execute("SELECT title FROM plays WHERE is_active=1"))
+    if play:titles.add(play)
+    def options(values,selected,all_label):
+        result='<option value="">'+esc(all_label)+'</option>'
+        return result+''.join('<option value="'+esc(value,quote=True)+'"'+(' selected' if value==selected else '')+'>'+esc(value)+'</option>' for value in values)
+    play_options=options(sorted(titles,key=str.casefold),play,'Все спектакли')
+    genre_options=options(genres,genre,'Все жанры')
+    current=report_rows(db,user,period['from'],period['to'],play=play,genre=genre)
+    previous=report_rows(db,user,period['previous_from'],period['previous_to'],play=play,genre=genre)
     rows=comparison_rows(current,previous)
     choices={'week':'Неделя','previous_week':'Предыдущая неделя','month':'Месяц',
         'previous_month':'Предыдущий месяц','season':'Театральный сезон','previous_season':'Предыдущий сезон','custom':'Произвольный период'}
@@ -122,16 +137,25 @@ def report_page(db,user,query):
         <label>Период <select name="period">{options}</select></label>
         <label>Дата внутри недели/месяца/сезона <input type="date" name="date" value="{period['anchor']}" required></label>
         <label>Для произвольного периода: с <input type="date" name="from" value="{period['from']}"></label>
-        <label>По <input type="date" name="to" value="{period['requested_to']}"></label><button>Показать</button></form>
+        <label>По <input type="date" name="to" value="{period['requested_to']}"></label>
+        <label>Спектакль <select name="play">{play_options}</select></label>
+        <label>Жанр <select name="genre">{genre_options}</select></label><button>Показать</button></form>
         <p>Отчёт: {period['from']} — {period['to']}. Сравнение: {period['previous_from']} — {period['previous_to']}.</p>
         <p>Неделя — понедельник–воскресенье. Театральный сезон — 1 сентября–10 июля включительно.
         В межсезонье показывается последний завершённый сезон.</p>"""
     if period['partial']:
         body+='<p>Период ещё не завершён: учтены дни по сегодня включительно; сравнение — с такой же прошедшей частью предыдущего периода (в пределах его длины).</p>'
+    body+='<p>Спектакль фильтрует только подписки на показы; жанр — только интересы анкеты. Остальные разделы показывают общие данные.</p>'
     body+='<p>Строки «сейчас» — текущий срез без исторического сравнения. История изменений собирается с установки панели. Отсутствие старых данных не доказывает отсутствие событий. Прочтения, покупки и переходы без источника данных не учитываются.</p>'
-    body+=table(['Показатель','Группа','Значение','За период / сейчас','Предыдущий период','Изменение'],rows)
+    from theatre_bot.report_sections import grouped_reports, headers_for
+    for name,note,section_rows in grouped_reports(rows):
+        body+='<section class="box"><h3>'+esc(name)+'</h3><p>'+esc(note)+'</p>'
+        if section_rows:
+            body+=table(headers_for(name),section_rows)
+        else:body+='<p>Нет записей для этого раздела.</p>'
+        body+='</section>' 
     from urllib.parse import urlencode
-    export={'period':period['kind'],'date':period['anchor'],'from':period['from'],'to':period['requested_to']}
+    export={'period':period['kind'],'date':period['anchor'],'from':period['from'],'to':period['requested_to'],'play':play,'genre':genre}
     body+=f'<p><a href="/reports.xlsx?{urlencode(export)}">Скачать Excel (.xlsx)</a> · <a href="/reports.csv?{urlencode(export)}">CSV</a></p>'
     return body,rows
 
@@ -149,8 +173,13 @@ def campaign_page(db,theatre,user,csrf,enabled):
         <label>Канал <select name="channel"><option value="vk">VK</option><option value="max">MAX</option><option value="all">VK и MAX</option></select></label>
         <label>Аудитория <select name="target">{options}</select></label><label><input type="checkbox" name="premieres" value="1"> Только интересующиеся премьерами</label>
         <label>Сообщение <textarea name="message" maxlength="2000" required></textarea></label><button>Сохранить черновик и посмотреть</button>''')
+    counts={}
+    for row in db.execute('SELECT campaign_id,status,count(*) AS total FROM campaign_recipients GROUP BY campaign_id,status'):
+        counts.setdefault(row['campaign_id'],{})[row['status']]=row['total']
     for c in db.execute('SELECT * FROM campaigns ORDER BY id DESC LIMIT 100'):
         body+=f'<section class="box"><h3>№{c["id"]} · {esc(c["name"])}</h3><p>{esc(STATUS_NAMES.get(c["status"],c["status"]))} · {esc(c["scheduled_at"] or "—")}</p><pre style="white-space:pre-wrap">{esc(c["message"])}</pre>'
+        stats=counts.get(c['id'],{})
+        body+=f'<p>Статистика рассылки: запланировано — {stats.get("planned",0)}; отправлено — {stats.get("sent",0)}; ошибки — {stats.get("failed",0)}; пропущено — {stats.get("skipped",0)}.</p><p>Покупки билетов и результаты акций пока не отслеживаются.</p>'
         if c['status']=='draft':
             body+=form('/campaign/preview',csrf,hidden('id',c['id'])+'<button>Предпросмотр текста и получателей</button>')
         if c['status']=='approved' and enabled:
@@ -226,18 +255,26 @@ def create_panel_handler(database_path,theatre_path,protector,security,*,campaig
                     self.send(200,json.dumps({'count':count,'last':last}).encode(),mime='application/json');return
                 if path in ('/','/admin'): self.page('Панель',dashboard(db,user,csrf));return
                 if path in ('/reports','/reports.csv','/reports.xlsx'):
-                    body,rows=report_page(db,user,query)
+                    require(user,'reports')
+                    theatre=sqlite3.connect(theatre_path.resolve().as_uri()+'?mode=ro',uri=True)
+                    try:body,rows=report_page(db,user,query,theatre)
+                    finally:theatre.close()
                     with db:audit(db,user['username'],'report_view' if path=='/reports' else 'report_export')
                     if path.endswith('.xlsx'):
                         from theatre_bot.report_excel import report_xlsx
                         selected=report_period(query)
+                        selected['play']=query.get('play','').strip()
+                        selected['genre']=query.get('genre','').strip()
                         self.send(200,report_xlsx(selected,rows),mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',filename='theatre-report-'+selected['from']+'-'+selected['to']+'.xlsx')
                     elif path.endswith('.csv'):
                         buffer=io.StringIO();writer=csv.writer(buffer)
                         writer.writerow(['Показатель','Группа','Значение','За период / сейчас','Предыдущий период','Изменение'])
                         selected=report_period(query)
                         writer.writerow(['Период',selected['from'],selected['to'],'Сравнение',selected['previous_from'],selected['previous_to']])
-                        for row in rows:writer.writerow([("'"+str(v)) if str(v).lstrip().startswith(('=','+','-','@')) else v for v in row])
+                        def csv_safe(value):
+                            return ("'"+str(value)) if isinstance(value,str) and value.lstrip().startswith(('=','+','-','@')) else value
+                        writer.writerow([csv_safe(v) for v in ['Спектакль',query.get('play','') or 'Все','Жанр',query.get('genre','') or 'Все']])
+                        for row in rows:writer.writerow([csv_safe(v) for v in row])
                         self.send(200,('\ufeff'+buffer.getvalue()).encode(),'','text/csv; charset=utf-8')
                     else:self.page('Отчёты',body)
                     return

@@ -15,7 +15,7 @@ from cryptography.fernet import Fernet
 from theatre_bot.subscribers import connect_subscribers,initialize_subscribers,IdentityProtector,record_consent
 from theatre_bot.database import connect,initialize
 from theatre_bot.admin_access import create_staff,require,password_matches,set_staff_active
-from theatre_bot.admin_panel import PanelSecurity,create_panel_handler,cancel_campaign
+from theatre_bot.admin_panel import PanelSecurity,create_panel_handler,cancel_campaign,campaign_page
 from theatre_bot.feedback import FeedbackFlow,staff_reply,authorized_ticket,change_ticket,queue_staff_alerts
 from theatre_bot.channels import IncomingMessage
 from theatre_bot.marketing_reports import report_rows
@@ -55,6 +55,18 @@ class StaffTests(unittest.TestCase):
             with self.assertRaises(PermissionError):require(self.user(role),'accounts')
         for role in ('advertising','analytics','observer'):require(self.user(role),'reports')
         with self.assertRaises(PermissionError):require(self.user('support'),'reports')
+
+    def test_campaign_statistics_are_restricted_and_count_statuses(self):
+        cid=create_campaign(self.db,'Акция','Текст','advertising',at=self.now)
+        subscriber=self.db.execute('SELECT id FROM subscribers LIMIT 1').fetchone()[0]
+        self.db.execute('INSERT INTO campaign_recipients (campaign_id,subscriber_id,status) VALUES (?,?,?)',(cid,subscriber,'sent'))
+        page=campaign_page(self.db,self.theatre,self.user('advertising'),'token',False)
+        self.assertIn('отправлено — 1',page)
+        self.assertIn('запланировано — 0',page)
+        self.assertIn('результаты акций пока не отслеживаются',page)
+        for role in ('analytics','observer','support'):
+            with self.assertRaises(PermissionError):
+                campaign_page(self.db,self.theatre,self.user(role),'token',False)
 
     def test_password_is_hashed_and_login_invalidated_on_disable(self):
         security=PanelSecurity();u=self.user('analytics')
@@ -342,6 +354,24 @@ class StaffTests(unittest.TestCase):
             self.assertIn('Как к Вам обращаться',reply.reply.text)
             self.assertNotIn('вопрос техподдержке',reply.reply.text)
 
+    def test_excel_show_dates_distinguish_performances(self):
+        from theatre_bot.subscribers import subscribe_to_play
+        record_consent(self.db,self.protector,'vk','123','service_notifications','draft-v1',True,'test',at=self.now)
+        subscribe_to_play(self.db,self.protector,'vk','123','play-key','Гамлет',at=self.now,
+            performance_key='performance-key',selected_starts_at='2026-11-20T18:00')
+        rows=report_rows(self.db,self.user('observer'),'2026-10-01','2026-10-31')
+        self.assertTrue(any('Гамлет · 20.11.2026 18:00'==row[2] for row in rows))
+
+    def test_excel_marketing_people_and_consent_events_remain_distinct(self):
+        record_consent(self.db,self.protector,'vk','123','marketing','draft-v1',True,'test',at=self.now)
+        record_consent(self.db,self.protector,'vk','123','marketing','draft-v1',False,'test',at=self.now)
+        with self.db:self.db.execute("UPDATE subscribers SET status='active'")
+        rows=report_rows(self.db,self.user('observer'),'2026-10-01','2026-10-31')
+        current=[r for r in rows if r[0]=='Рекламное согласие сейчас']
+        self.assertEqual(current[0][3],0)
+        events=[r for r in rows if r[0]=='Согласия за период' and r[1]=='Реклама']
+        self.assertEqual(sum(r[3] for r in events),2)
+
 class PanelHttpTests(StaffTests):
     # HTTP requests use separate connections, as in the actual loopback server.
     def setUp(self):
@@ -497,3 +527,50 @@ class PanelHttpTests(StaffTests):
                 self.assertIn('xl/tables/table1.xml',book.namelist())
         self.login('support')
         self.assertEqual(self.request('/reports.xlsx')[0],403)
+
+    def test_excel_categories_are_also_separated_in_panel(self):
+        self.login('observer')
+        status,body=self.request('/reports')
+        self.assertEqual(status,200)
+        for heading in ('Аудитория','Интересы','Подписки на показы','Реклама','Согласия на уведомления','Обращения'):
+            self.assertIn('<h3>'+heading+'</h3>',body)
+        self.assertIn('один зритель может совершить несколько действий',body)
+
+    def test_report_filters_http_download_only_selected_items(self):
+        import io,zipfile
+        from xml.etree import ElementTree as ET
+        from urllib.parse import urlencode
+        now=datetime.now(timezone.utc)
+        date=(now+timedelta(hours=5)).date().isoformat()
+        with self.db:
+            for key,title in [('p1','Гамлет'),('p2','Обломов')]:
+                self.db.execute('''INSERT INTO subscriptions(subscriber_id,topic_type,topic_key,topic_label,subscribed_at)
+                    VALUES(1,'play',?,?,?)''',(key,title,now.isoformat(timespec='seconds')))
+            for key,label in [('g1','Комедия'),('g2','Драма')]:
+                self.db.execute('''INSERT INTO preferences(subscriber_id,preference_type,preference_key,preference_label,source,recorded_at)
+                    VALUES(1,'genre',?,?,'interest_survey',?)''',(key,label,now.isoformat(timespec='seconds')))
+        self.login('observer')
+        query=urlencode({'period':'custom','from':date,'to':date,'play':'Гамлет','genre':'Комедия'})
+        status,body=self.request('/reports?'+query)
+        self.assertEqual(status,200)
+        self.assertIn('value="Гамлет" selected',body)
+        self.assertIn('value="Комедия" selected',body)
+        with self.client.open(self.url+'/reports.xlsx?'+query,timeout=5) as response:
+            with zipfile.ZipFile(io.BytesIO(response.read())) as z:
+                ns={'s':'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+                def texts(index):
+                    root=ET.fromstring(z.read(f'xl/worksheets/sheet{index}.xml'))
+                    return [n.text or '' for n in root.findall('.//s:t',ns)]
+                self.assertIn('Комедия',texts(2));self.assertNotIn('Драма',texts(2))
+                self.assertIn('Гамлет',texts(3));self.assertNotIn('Обломов',texts(3))
+                self.assertTrue(any('Спектакль: Гамлет; жанр: Комедия' in x for x in texts(3)))
+
+    def test_report_filter_csv_metadata_cannot_execute_as_formula(self):
+        import csv,io
+        from urllib.parse import urlencode
+        self.login('observer')
+        query=urlencode({'play':'=1+2','genre':'Комедия'})
+        with self.client.open(self.url+'/reports.csv?'+query,timeout=5) as response:
+            rows=list(csv.reader(io.StringIO(response.read().decode('utf-8-sig'))))
+        self.assertEqual(rows[2][1],"'=1+2")
+        self.assertEqual(rows[2][3],'Комедия')

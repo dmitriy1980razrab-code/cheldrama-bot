@@ -37,3 +37,25 @@ class ReportExcelTests(unittest.TestCase):
         self.parts([])
     def test_wrong_column_count_rejected(self):
         with self.assertRaises(ValueError):report_xlsx(self.period,[('one','two')])
+
+    def test_categories_are_separate_sheets_and_consents_are_not_mixed(self):
+        rows=[('Профили сейчас','vk','Активен',1,'—','—'),
+              ('Приоритеты сейчас','Жанр','Комедия',3,'—','—'),
+              ('Подписки на показы за период','подписка','Гамлет · 01.11.2026 18:00',1,0,1),
+              ('Согласия за период','Реклама','Отозвано',6,0,6),
+              ('Согласия за период','Сервисные уведомления','Выдано',4,0,4)]
+        parts=self.parts(rows)
+        ns={'s':'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+        names=[s.get('name') for s in parts['xl/workbook.xml'].find('s:sheets',ns)]
+        self.assertEqual(names,['Аудитория','Интересы','Подписки на показы','Реклама','Согласия на уведомления','Обращения'])
+        def text(i):return ' '.join(t.text or '' for t in parts[f'xl/worksheets/sheet{i}.xml'].findall('.//s:t',ns))
+        self.assertIn('Комедия',text(2));self.assertNotIn('Гамлет',text(2))
+        self.assertIn('Гамлет',text(3));self.assertNotIn('Отозвано',text(3))
+        self.assertIn('Отозвано',text(4));self.assertNotIn('Сервисные уведомления',text(4))
+        self.assertIn('Сервисные уведомления',text(5));self.assertNotIn('Отозвано',text(5))
+
+    def test_count_format_does_not_force_trailing_decimal_separator(self):
+        parts=self.parts([])
+        ns={'s':'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+        style=parts['xl/styles.xml'].find('s:cellXfs',ns)[4]
+        self.assertEqual(style.get('numFmtId'),'0')
