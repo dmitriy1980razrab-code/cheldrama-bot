@@ -200,10 +200,9 @@ class DialogTests(unittest.TestCase):
 
     def test_greeting(self):
         reply = answer(self.connection, "Добрый вечер", datetime(2026, 9, 18, 12, 0))
-        self.assertEqual(
-            reply.text,
-            "Здравствуйте! Разрешите пригласить Вас в мир театра имени Н. Орлова 🎭",
-        )
+        self.assertTrue(reply.text.startswith("Здравствуйте! Разрешите пригласить Вас в мир театра имени Н. Орлова 🎭"))
+        for term in ('названию', 'жанру', 'дате', 'возрасту', 'фамилии артиста'):
+            self.assertIn(term, reply.text)
 
 
     def test_director_question_returns_only_director(self):
@@ -237,6 +236,23 @@ class DialogTests(unittest.TestCase):
         self.assertIn("жанре", reply.text)
         self.assertIn("участвует конкретный артист", reply.text)
         self.assertNotIn("Мартынов", reply.text)
+
+    def test_capability_questions(self):
+        for question in ('Что ты умеешь?', 'Что вы можете?', 'Что умеет бот?',
+                         'Чем ты можешь помочь?', 'Какие у тебя возможности?', 'Как тобой пользоваться?'):
+            with self.subTest(question=question):
+                reply=answer(self.connection,question,datetime(2026,9,18,12,0))
+                self.assertIn('жанре',reply.text)
+
+    def test_existing_default_greeting_is_updated_without_overwriting_custom(self):
+        from theatre_bot.templates import seed_templates
+        old='Здравствуйте! Разрешите пригласить Вас в мир театра имени Н. Орлова 🎭'
+        self.connection.execute("UPDATE response_templates SET template=? WHERE intent='greeting'",(old,))
+        seed_templates(self.connection)
+        self.assertIn('фамилии артиста',answer(self.connection,'Привет',datetime(2026,9,18)).text)
+        self.connection.execute("UPDATE response_templates SET template='Свой текст' WHERE intent='greeting'")
+        seed_templates(self.connection)
+        self.assertEqual(answer(self.connection,'Привет',datetime(2026,9,18)).text,'Свой текст')
 
     def test_template_can_be_edited_in_database(self):
         self.connection.execute(
