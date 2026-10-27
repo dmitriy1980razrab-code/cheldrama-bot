@@ -204,6 +204,14 @@ class DialogTests(unittest.TestCase):
         for term in ('названию', 'жанру', 'дате', 'возрасту', 'фамилии артиста'):
             self.assertIn(term, reply.text)
 
+    def test_start_message_is_a_greeting(self):
+        for question in ('Начнём', 'начнем', 'Давайте начнём!', 'Привет', 'Здравствуйте'):
+            with self.subTest(question=question):
+                reply=answer(self.connection,question,datetime(2026,9,18,12,0))
+                self.assertTrue(reply.text.startswith('Здравствуйте! Разрешите пригласить Вас'))
+        from theatre_bot.intents import detect_intent,Intent
+        self.assertEqual(detect_intent('начнем с комедии').intent,Intent.GENRE)
+
 
     def test_director_question_returns_only_director(self):
         title = "\u041f\u0435\u0440\u0432\u044b\u0439 \u0441\u043f\u0435\u043a\u0442\u0430\u043a\u043b\u044c"
